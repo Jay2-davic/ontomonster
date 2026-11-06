@@ -196,7 +196,7 @@ _FORMAT_ORDER = {
 _DEFAULT_ORDER = _TURTLE_FB
 
 
-def _decode_text(raw: bytes) -> str | None:
+def _decode_text(raw: bytes) -> "str | None":
     """Convert bytes to clean text.
 
     Choose an encoding, remove a BOM and normalize the newlines. The
