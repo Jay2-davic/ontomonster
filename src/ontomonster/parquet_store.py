@@ -147,14 +147,14 @@ def _conform(t: pa.Table) -> pa.Table:
     return pa.Table.from_arrays(arrays, schema=_SCHEMA)
 
 
-def _read_table(save_dir) -> pa.Table | None:
+def _read_table(save_dir) -> "pa.Table | None":
     p = _path(save_dir)
     if not p.is_file():
         return None
     return _conform(pq.read_table(p))
 
 
-def latest_version(save_dir, workspace: str) -> str | None:
+def latest_version(save_dir, workspace: str) -> "str | None":
     t = _read_table(save_dir)
     if t is None:
         return None
@@ -515,7 +515,7 @@ def save_working(
     return {"workspace": workspace, "saved": True, "ts": ts}
 
 
-def load_working(save_dir, workspace: str) -> dict | None:
+def load_working(save_dir, workspace: str) -> "dict | None":
     p = _working_path(save_dir)
     if not p.exists():
         return None

@@ -70,7 +70,7 @@ def _local(name: str) -> str:
     return name.split(":", 1)[1] if ":" in name else name
 
 
-def _pfx(name: str) -> str | None:
+def _pfx(name: str) -> "str | None":
     return name.split(":", 1)[0] if ":" in name else None
 
 
