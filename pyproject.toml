@@ -1,0 +1,69 @@
+[project]
+name = "ontomonster"
+version = "1.0.0"
+description = "Local ontology authoring tool aligned with BFO and CCO"
+readme = "README.md"
+license = { text = "BSD-3-Clause" }
+requires-python = ">=3.8"
+authors = [
+    { name = "LLNL Data Infrastructure & Workflows Team" }
+]
+keywords = ["ontology", "rdf", "owl", "bfo", "cco", "linkml", "knowledge-graph"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
+
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "rdflib>=7.0",
+    "PyYAML>=6.0",
+    "linkml>=1.7",
+    "pyarrow>=14",
+]
+
+[project.optional-dependencies]
+dev = [
+    "playwright>=1.40",
+    "pycodestyle>=2.11",
+]
+
+[project.urls]
+Homepage = "https://github.com/Jay2-davic/ontomonster"
+Documentation = "https://github.com/Jay2-davic/ontomonster/blob/main/docs/GUIDE.md"
+Repository = "https://github.com/Jay2-davic/ontomonster"
+Changelog = "https://github.com/Jay2-davic/ontomonster/blob/main/CHANGELOG.md"
+
+[project.scripts]
+ontomonster = "ontomonster.__main__:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pixi.project]
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
+
+[tool.pixi.pypi-dependencies]
+ontomonster = { path = ".", editable = true }
+
+[tool.pixi.tasks]
+dev-screenshots = "python dev/capture_docs.py"
+style-check = "pycodestyle src/ontomonster"
+
+[tool.pixi.feature.dev.dependencies]
+playwright = ">=1.40"
+pycodestyle = ">=2.11"
