@@ -5,6 +5,17 @@ This file lists all notable changes to OntoMonster. The project uses
 
 ## [Unreleased]
 
+### Added
+- Native OWL/XML reader. Ontologies in OWL/XML format (like cto.owl)
+  now load correctly. The reader uses streaming parse for memory
+  efficiency and handles prefix declarations, class/property
+  declarations, subclass axioms, annotations, domains, ranges, and
+  property hierarchies. Complex class expressions (restrictions) are
+  ignored and counted at DEBUG level.
+- BFO alignment badges in reference list and glossary. Shows
+  structural BFO alignment status when available from catalog.json.
+- BFO-aligned filter toggle in autofill (off by default).
+
 ### Changed
 - Reduced startup noise. Diagnostic messages moved to DEBUG level.
   Set ONTO_MONSTER_LOG=debug to see them. Default console shows only
@@ -15,12 +26,15 @@ This file lists all notable changes to OntoMonster. The project uses
   (up to 6 workers). Largest files start first.
 - Progressive polling. UI polls at 500ms, increases to 1000ms after
   5 seconds.
-- Light status endpoint. After refcache build, UI calls status with
-  light=true to skip org scan.
+- Light status endpoint uses GET with query param instead of POST.
+  After refcache build, UI calls /api/project/status?light=1 to skip
+  org scan.
 
 ### Fixed
 - Removed /api/refcache/progress from uvicorn access log to reduce
   noise.
+- Fixed 405 error on /api/project/status. Route accepts GET with query
+  parameters instead of POST with body.
 
 ## [1.0.0] - 2026-11-05
 

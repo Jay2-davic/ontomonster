@@ -29,11 +29,15 @@ The record shape is:
 A file that failed gives {file, error}.
 """
 
+import logging
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
-from rdflib import Graph, RDF, RDFS, OWL, URIRef
+from rdflib import Graph, RDF, RDFS, OWL, URIRef, Literal
 from rdflib.namespace import SKOS
 from rdflib.collection import Collection
+
+logger = logging.getLogger("onto_monster")
 
 IAO_DEF = URIRef("http://purl.obolibrary.org/obo/IAO_0000115")
 DEPRECATED = URIRef("http://www.w3.org/2002/07/owl#deprecated")
@@ -232,29 +236,294 @@ def _format_order(path: Path) -> list:
     return _FORMAT_ORDER.get(path.suffix.lower(), _DEFAULT_ORDER)
 
 
+def _is_owlxml(content: bytes) -> bool:
+    """Check if file is OWL/XML by examining first 4KB."""
+    head = content[:4096].decode("utf-8", errors="ignore")
+    return (
+        "<Ontology" in head
+        and "xmlns=" in head
+        and ("/owl#" in head or "/OWL#" in head)
+        and "<rdf:RDF" not in head
+    )
+
+
+def owlxml_to_graph(path: Path) -> Graph:
+    """Parse OWL/XML file into rdflib Graph using streaming approach.
+
+    Handles: Prefix, Declaration, SubClassOf, AnnotationAssertion,
+    ObjectPropertyDomain/Range, DataPropertyDomain/Range,
+    SubObjectPropertyOf, InverseObjectProperties.
+    Ignores complex class expressions (restrictions).
+    """
+    g = Graph()
+    namespaces = {}
+    ignored_restrictions = 0
+
+    # OWL namespace
+    OWL_NS = "http://www.w3.org/2002/07/owl#"
+
+    # Parse with iterparse for memory efficiency
+    context = ET.iterparse(str(path), events=("start", "end"))
+    context = iter(context)
+
+    # Skip root element
+    event, root = next(context)
+
+    # Track current element path for context
+    current_path = []
+    current_elem_data = {}
+
+    for event, elem in context:
+        tag = elem.tag
+        # Remove namespace prefix
+        if "}" in tag:
+            tag = tag.split("}", 1)[1]
+
+        if event == "start":
+            current_path.append(tag)
+
+            # <Prefix name="..." IRI="..."/>
+            if tag == "Prefix":
+                name = elem.get("name", elem.get("Name"))
+                iri = elem.get("IRI")
+                if name and iri:
+                    namespaces[name] = iri
+                    g.bind(name, iri)
+
+        elif event == "end":
+            if current_path and current_path[-1] == tag:
+                current_path.pop()
+
+            # Helper to expand abbreviated IRI
+            def expand_iri(iri_str):
+                if not iri_str:
+                    return None
+                if iri_str.startswith("http://") or iri_str.startswith("https://"):
+                    return URIRef(iri_str)
+                if ":" in iri_str:
+                    prefix, local = iri_str.split(":", 1)
+                    if prefix in namespaces:
+                        return URIRef(namespaces[prefix] + local)
+                return URIRef(iri_str)
+
+            # <Declaration><Class IRI="..."/></Declaration>
+            if tag == "Declaration":
+                for child in elem:
+                    child_tag = child.tag.split("}", 1)[1] if "}" in child.tag else child.tag
+                    iri = child.get("IRI") or child.get("abbreviatedIRI")
+                    if iri:
+                        subj = expand_iri(iri)
+                        if subj:
+                            if child_tag == "Class":
+                                g.add((subj, RDF.type, OWL.Class))
+                            elif child_tag == "ObjectProperty":
+                                g.add((subj, RDF.type, OWL.ObjectProperty))
+                            elif child_tag == "DataProperty":
+                                g.add((subj, RDF.type, OWL.DatatypeProperty))
+                            elif child_tag == "AnnotationProperty":
+                                g.add((subj, RDF.type, OWL.AnnotationProperty))
+                            elif child_tag == "NamedIndividual":
+                                g.add((subj, RDF.type, OWL.NamedIndividual))
+
+            # <SubClassOf><Class IRI="A"/><Class IRI="B"/></SubClassOf>
+            elif tag == "SubClassOf":
+                classes = []
+                has_restriction = False
+                for child in elem:
+                    child_tag = child.tag.split("}", 1)[1] if "}" in child.tag else child.tag
+                    if child_tag == "Class":
+                        iri = child.get("IRI") or child.get("abbreviatedIRI")
+                        if iri:
+                            classes.append(expand_iri(iri))
+                    elif child_tag in ("ObjectSomeValuesFrom", "ObjectAllValuesFrom",
+                                      "ObjectMinCardinality", "ObjectMaxCardinality",
+                                      "ObjectExactCardinality", "ObjectIntersectionOf",
+                                      "ObjectUnionOf", "ObjectComplementOf"):
+                        has_restriction = True
+                if len(classes) == 2 and not has_restriction:
+                    g.add((classes[0], RDFS.subClassOf, classes[1]))
+                elif has_restriction:
+                    ignored_restrictions += 1
+
+            # <AnnotationAssertion><AnnotationProperty IRI="..."/>
+            #                      <IRI>subject</IRI><Literal>value</Literal>
+            elif tag == "AnnotationAssertion":
+                prop = None
+                subj = None
+                obj = None
+                lang = None
+                datatype = None
+
+                for child in elem:
+                    child_tag = child.tag.split("}", 1)[1] if "}" in child.tag else child.tag
+                    if child_tag == "AnnotationProperty":
+                        iri = child.get("IRI") or child.get("abbreviatedIRI")
+                        prop = expand_iri(iri) if iri else None
+                    elif child_tag == "IRI":
+                        subj = expand_iri(child.text)
+                    elif child_tag == "Literal":
+                        obj = child.text or ""
+                        lang = child.get("{http://www.w3.org/XML/1998/namespace}lang")
+                        dt = child.get("datatypeIRI")
+                        if dt:
+                            datatype = expand_iri(dt)
+
+                if prop and subj and obj is not None:
+                    if lang:
+                        g.add((subj, prop, Literal(obj, lang=lang)))
+                    elif datatype:
+                        g.add((subj, prop, Literal(obj, datatype=datatype)))
+                    else:
+                        g.add((subj, prop, Literal(obj)))
+
+            # <ObjectPropertyDomain><ObjectProperty IRI="..."/>
+            #                       <Class IRI="..."/>
+            elif tag == "ObjectPropertyDomain":
+                prop = None
+                domain = None
+                for child in elem:
+                    child_tag = child.tag.split("}", 1)[1] if "}" in child.tag else child.tag
+                    if child_tag == "ObjectProperty":
+                        iri = child.get("IRI") or child.get("abbreviatedIRI")
+                        prop = expand_iri(iri) if iri else None
+                    elif child_tag == "Class":
+                        iri = child.get("IRI") or child.get("abbreviatedIRI")
+                        domain = expand_iri(iri) if iri else None
+                if prop and domain:
+                    g.add((prop, RDFS.domain, domain))
+
+            # <ObjectPropertyRange><ObjectProperty IRI="..."/>
+            #                      <Class IRI="..."/>
+            elif tag == "ObjectPropertyRange":
+                prop = None
+                range_cls = None
+                for child in elem:
+                    child_tag = child.tag.split("}", 1)[1] if "}" in child.tag else child.tag
+                    if child_tag == "ObjectProperty":
+                        iri = child.get("IRI") or child.get("abbreviatedIRI")
+                        prop = expand_iri(iri) if iri else None
+                    elif child_tag == "Class":
+                        iri = child.get("IRI") or child.get("abbreviatedIRI")
+                        range_cls = expand_iri(iri) if iri else None
+                if prop and range_cls:
+                    g.add((prop, RDFS.range, range_cls))
+
+            # Similar for DataProperty
+            elif tag == "DataPropertyDomain":
+                prop = None
+                domain = None
+                for child in elem:
+                    child_tag = child.tag.split("}", 1)[1] if "}" in child.tag else child.tag
+                    if child_tag == "DataProperty":
+                        iri = child.get("IRI") or child.get("abbreviatedIRI")
+                        prop = expand_iri(iri) if iri else None
+                    elif child_tag == "Class":
+                        iri = child.get("IRI") or child.get("abbreviatedIRI")
+                        domain = expand_iri(iri) if iri else None
+                if prop and domain:
+                    g.add((prop, RDFS.domain, domain))
+
+            elif tag == "DataPropertyRange":
+                prop = None
+                range_cls = None
+                for child in elem:
+                    child_tag = child.tag.split("}", 1)[1] if "}" in child.tag else child.tag
+                    if child_tag == "DataProperty":
+                        iri = child.get("IRI") or child.get("abbreviatedIRI")
+                        prop = expand_iri(iri) if iri else None
+                    elif child_tag == "Datatype":
+                        iri = child.get("IRI") or child.get("abbreviatedIRI")
+                        range_cls = expand_iri(iri) if iri else None
+                if prop and range_cls:
+                    g.add((prop, RDFS.range, range_cls))
+
+            # <SubObjectPropertyOf><ObjectProperty IRI="A"/>
+            #                      <ObjectProperty IRI="B"/>
+            elif tag == "SubObjectPropertyOf":
+                props = []
+                for child in elem:
+                    child_tag = child.tag.split("}", 1)[1] if "}" in child.tag else child.tag
+                    if child_tag == "ObjectProperty":
+                        iri = child.get("IRI") or child.get("abbreviatedIRI")
+                        if iri:
+                            props.append(expand_iri(iri))
+                if len(props) == 2:
+                    g.add((props[0], RDFS.subPropertyOf, props[1]))
+
+            # <InverseObjectProperties><ObjectProperty IRI="A"/>
+            #                           <ObjectProperty IRI="B"/>
+            elif tag == "InverseObjectProperties":
+                props = []
+                for child in elem:
+                    child_tag = child.tag.split("}", 1)[1] if "}" in child.tag else child.tag
+                    if child_tag == "ObjectProperty":
+                        iri = child.get("IRI") or child.get("abbreviatedIRI")
+                        if iri:
+                            props.append(expand_iri(iri))
+                if len(props) == 2:
+                    g.add((props[0], OWL.inverseOf, props[1]))
+
+            # Clear element to save memory
+            elem.clear()
+            if elem.getprevious() is not None:
+                try:
+                    parent = elem.getparent()
+                    if parent is not None:
+                        parent.remove(elem)
+                except:
+                    pass
+
+    if ignored_restrictions > 0:
+        logger.debug("OWL/XML: ignored %d class restrictions", ignored_restrictions)
+
+    return g
+
+
 def _load_graph(f: Path, nm: str) -> Graph:
     """Parse a supported ontology file into an rdflib Graph.
 
-    The function works on the decoded content, not on the OS path. A
-    path breaks on Windows when a drive letter such as C: is read as a
-    URL scheme. The function first fixes the encoding, the BOM and the
-    newlines. It then tries the correct parser for the file type first.
+    Detects OWL/XML before trying rdflib parsers. The function works on
+    decoded content for most formats. A path breaks on Windows when a
+    drive letter such as C: is read as a URL scheme. The function first
+    fixes the encoding, the BOM and the newlines. It then tries the
+    correct parser for the file type first.
     """
     raw = Path(f).read_bytes()
-    text = _decode_text(raw)
-    first_err = None
-    for fmt in _format_order(f):
+
+    # Check for OWL/XML before attempting rdflib parse. rdflib reads
+    # OWL/XML as RDF/XML and prints "does not look like a valid URI"
+    # warnings, then fails.
+    if _is_owlxml(raw):
         try:
-            g = Graph()
-            if text is not None:
-                g.parse(data=text, format=fmt)
-            else:  # The bytes cannot be decoded. This is the last resort.
-                g.parse(f.as_posix(), format=fmt)
-            return g
+            return owlxml_to_graph(f)
         except Exception as e:  # noqa: BLE001
-            if first_err is None:
-                first_err = e
-            continue
+            raise RuntimeError(
+                "OWL/XML parse failed for %s: %s" % (nm, str(e)[:120])
+            )
+
+    text = _decode_text(raw)
+
+    # Silence rdflib.term warnings during parse attempts. OWL/XML files
+    # that reach here will print "does not look like a valid URI"
+    # warnings before failing. We catch the failure and return a clear
+    # error instead.
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=Warning, module="rdflib.term")
+        first_err = None
+        for fmt in _format_order(f):
+            try:
+                g = Graph()
+                if text is not None:
+                    g.parse(data=text, format=fmt)
+                else:
+                    g.parse(f.as_posix(), format=fmt)
+                return g
+            except Exception as e:  # noqa: BLE001
+                if first_err is None:
+                    first_err = e
+                continue
+
     raise RuntimeError(
         "could not parse %s (starts with %r): %s"
         % (nm, raw[:48], str(first_err)[:120])

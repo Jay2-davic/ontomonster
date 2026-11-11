@@ -1011,8 +1011,9 @@ async def org_select(req: Request):
 
 @app.get("/api/project/status")
 async def project_status(req: Request):
-    """Get project status. Pass light=true to skip org scan."""
-    light = req.query_params.get("light") == "true"
+    """Get project status. Pass light=1 or light=true to skip org scan."""
+    light_param = req.query_params.get("light", "")
+    light = light_param in ("1", "true")
     return JSONResponse(_status(include_refs=True, scan_org=not light))
 
 
