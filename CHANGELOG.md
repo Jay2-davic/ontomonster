@@ -31,16 +31,24 @@ your computer.
 - Progressive polling. UI polls at 500ms, increases to 1000ms after
   5 seconds.
 
-**Value Autocomplete Deduplication**
-- Fixed duplicate entries in value autofill. Duplicates occurred when
-  the same IRI was declared in multiple ontologies (e.g., UO_0000021
-  in both uo.owl and chmo.owl) and when different IRIs represented the
-  same concept (e.g., gram in UO, QUDT, and OM).
+**Autocomplete Deduplication**
+- Fixed duplicate entries in value and predicate autofill. Duplicates
+  occurred when the same IRI was declared in multiple ontologies (e.g.,
+  UO_0000021 in both uo.owl and chmo.owl for values, or BFO_0000051
+  "has part" in multiple ontologies for predicates) and when different
+  IRIs represented the same concept.
 - IRI-based deduplication: Each IRI appears once. Winner selected by:
-  ontology prefix matching IRI token, then copy with definition, then
-  alphabetically first.
+  owner ontology (longest namespace prefix match or OBO ID token match),
+  then copy with definition, then alphabetically first. Applies to both
+  classes and properties.
 - Label-based grouping: Same-meaning terms grouped with "+N namespaces"
-  chip. Click to expand alternates and select specific namespace.
+  chip. Click to expand alternates and select specific namespace. For
+  predicates, groups by label AND property kind (object/data/annotation)
+  so different property types stay separate.
+- Deduplication applies BEFORE the 60-row cap, ensuring best matches are
+  shown. Works in all predicate autofill paths (with and without prefix).
+- STD_PROPS (bundled properties) and loaded ontology properties with same
+  IRI collapse to one row.
 - Winner for label group: alphabetically first (preferred list support
   planned for value_scopes.yaml).
 

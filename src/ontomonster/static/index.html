@@ -1013,15 +1013,23 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
   let acEl=null,acTarget=null,acKind="val",acPrefix="",acAll=[],acItems=[],acIdx=-1,acChoosing=false;
   function _termAltText(t){var s=[];(t.children||[]).forEach(function(c){if(c.pred==="skos:altLabel"||c.pred==="skos:prefLabel"){var v=litDisp(c.val);if(v)s.push(v);}});return s.join(" ");}
   // Debug helper for measuring autocomplete candidates
-  window.__dbgCand=function(query){
-    if(!query){console.log("Usage: __dbgCand('gram') or __dbgCand('information content')");return;}
-    const cands=acCandidates("val","");
+  window.__dbgCand=function(query,kind){
+    if(!query){console.log("Usage: __dbgCand('gram') or __dbgCand('gram','val') or __dbgCand('has part','pred')");return;}
+    const k=kind||(query.indexOf(" ")>=0?"val":"val");
+    const cands=acCandidates(k==="pred"?"rel":k,"");
     console.log("=== ALL CANDIDATES (before dedup, before 60-row cap) ===");
-    console.log("Total:",cands.length);
+    console.log("Kind:",k,"Total:",cands.length);
     console.table(cands.map(it=>{
       let u="";
       if(it.pfx&&ONTOS[it.pfx]&&ONTOS[it.pfx].classes&&ONTOS[it.pfx].classes[it.code]){
         u=ONTOS[it.pfx].classes[it.code].u||"";
+      }
+      if(!u&&it.pfx&&ONTOS[it.pfx]&&ONTOS[it.pfx].props){
+        const pr=ONTOS[it.pfx].props.find(p=>p.c===it.code);
+        if(pr)u=pr.u||"";
+      }
+      if(!u&&it.pfx&&STD_PREFIXES[it.pfx]&&it.code){
+        u=STD_PREFIXES[it.pfx]+it.code;
       }
       return {
         onto_key:it.pfx||"(own)",
@@ -1037,6 +1045,13 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
       let u="";
       if(it.pfx&&ONTOS[it.pfx]&&ONTOS[it.pfx].classes&&ONTOS[it.pfx].classes[it.code]){
         u=ONTOS[it.pfx].classes[it.code].u||"";
+      }
+      if(!u&&it.pfx&&ONTOS[it.pfx]&&ONTOS[it.pfx].props){
+        const pr=ONTOS[it.pfx].props.find(p=>p.c===it.code);
+        if(pr)u=pr.u||"";
+      }
+      if(!u&&it.pfx&&STD_PREFIXES[it.pfx]&&it.code){
+        u=STD_PREFIXES[it.pfx]+it.code;
       }
       if(u){
         if(!byU[u])byU[u]=[];
@@ -1088,45 +1103,87 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
     }));
   };
   // STEP 2: Group by normalized label (same meaning, different IRIs)
-  function acGroupByLabel(items){
+  // Get property kind (object/data/annotation) from its IRI and range.
+  // Returns "obj", "data", or "annot" (or null if unknown).
+  function _propKind(pfx,code){
+    if(!pfx||!code)return null;
+    // Check loaded ontology props for range info.
+    if(ONTOS[pfx]&&ONTOS[pfx].props){
+      const pr=ONTOS[pfx].props.find(p=>p.c===code);
+      if(pr&&pr.rng&&pr.rng.length>0){
+        // If range includes XSD or rdfs:Literal, it's a data property.
+        for(const r of pr.rng){
+          if(r.indexOf("http://www.w3.org/2001/XMLSchema#")===0||r==="http://www.w3.org/2000/01/rdf-schema#Literal"){
+            return "data";
+          }
+        }
+        // Otherwise assume object property (range is classes).
+        return "obj";
+      }
+    }
+    // Heuristic: owl:AnnotationProperty and dc/dcterms are usually
+    // annotation properties.
+    const k=(pfx+":"+code).toLowerCase();
+    if(k.indexOf("annotation")>=0||pfx==="dc"||pfx==="dcterms")return "annot";
+    // Default to obj for most relations.
+    return "obj";
+  }
+  function acGroupByLabel(items,kind){
     const norm=s=>(s||"").toLowerCase().trim().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/\s+/g," ");
-    const byLabel={};
+    const byKey={};
     items.forEach(it=>{
-      const key=norm(it.label);
-      if(key){
-        if(!byLabel[key])byLabel[key]=[];
-        byLabel[key].push(it);
+      const lbl=norm(it.label);
+      if(lbl){
+        // For predicates, group by label AND property kind.
+        let key=lbl;
+        if(kind==="rel"){
+          const pk=_propKind(it.pfx,it.code)||"obj";
+          key=lbl+"__KIND__"+pk;
+        }
+        if(!byKey[key])byKey[key]=[];
+        byKey[key].push(it);
       }
     });
     const res=[];
-    Object.keys(byLabel).forEach(label=>{
-      const group=byLabel[label];
+    Object.keys(byKey).forEach(key=>{
+      const group=byKey[key];
       if(group.length===1){
         res.push(group[0]);
         return;
       }
-      // Winner selection (no hard-coded lists yet, will add preferred list):
-      // 1. TODO: Check preferred list from value_scopes.yaml
+      // Winner selection (no hard-coded lists yet, will add preferred
+      // list): 1. TODO: Check preferred list from value_scopes.yaml
       // 2. BFO aligned ontologies (check bfo status in catalog.json)
       // 3. First alphabetically
       let winner=group[0];
-      // For now: alphabetically until we load preferred list
+      // For now: alphabetically until we load preferred list.
       group.sort((a,b)=>(a.pfx||"").localeCompare(b.pfx||""));
       winner=group[0];
-      // Mark as grouped with alternates
+      // Mark as grouped with alternates.
       winner._alts=group.slice(1);
       winner._altCount=group.length-1;
       res.push(winner);
     });
     return res;
   }
-  // STEP 1: Deduplicate candidates by full IRI
-  function acDedupByIRI(items){
+  // STEP 1: Deduplicate candidates by full IRI (works for classes and
+  // properties).
+  function acDedupByIRI(items,kind){
     const byIRI={};
     items.forEach(it=>{
       let u="";
+      // Try classes first.
       if(it.pfx&&ONTOS[it.pfx]&&ONTOS[it.pfx].classes&&ONTOS[it.pfx].classes[it.code]){
         u=ONTOS[it.pfx].classes[it.code].u||"";
+      }
+      // For predicates, check props.
+      if(!u&&it.pfx&&ONTOS[it.pfx]&&ONTOS[it.pfx].props){
+        const pr=ONTOS[it.pfx].props.find(p=>p.c===it.code);
+        if(pr)u=pr.u||"";
+      }
+      // For STD_PROPS, build IRI from bundled namespace.
+      if(!u&&it.pfx&&STD_PREFIXES[it.pfx]&&it.code){
+        u=STD_PREFIXES[it.pfx]+it.code;
       }
       if(!u){
         u="__no_iri__"+(it.pfx||"")+"_"+it.code;
@@ -1145,7 +1202,9 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
         return;
       }
       // Winner selection for one IRI:
-      // 1. Ontology whose prefix equals ID token (UO_ -> uo)
+      // 1. Owner ontology (longest namespace that is a prefix of the
+      // IRI). For OBO IRIs, the ontology whose prefix equals the ID
+      // token (UO_ -> uo, BFO_ -> bfo).
       let tok=null;
       const m=/\/obo\/([A-Z]+)_/i.exec(iri);
       if(m)tok=m[1].toLowerCase();
@@ -1153,14 +1212,32 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
       if(tok){
         winner=cands.find(c=>c.pfx===tok);
       }
-      // 2. Otherwise copy with definition
+      // 1b. Longest namespace match.
       if(!winner){
-        const withDef=cands.filter(c=>
-          ONTOS[c.pfx]&&ONTOS[c.pfx].classes&&ONTOS[c.pfx].classes[c.code]&&ONTOS[c.pfx].classes[c.code].d
-        );
+        let longest=0;
+        cands.forEach(c=>{
+          if(c.pfx&&ONTOS[c.pfx]&&ONTOS[c.pfx].iri){
+            const ns=ONTOS[c.pfx].iri;
+            if(iri.indexOf(ns)===0&&ns.length>longest){
+              longest=ns.length;
+              winner=c;
+            }
+          }
+        });
+      }
+      // 2. Otherwise copy with definition.
+      if(!winner){
+        const withDef=cands.filter(c=>{
+          if(ONTOS[c.pfx]&&ONTOS[c.pfx].classes&&ONTOS[c.pfx].classes[c.code]&&ONTOS[c.pfx].classes[c.code].d)return true;
+          if(ONTOS[c.pfx]&&ONTOS[c.pfx].props){
+            const pr=ONTOS[c.pfx].props.find(p=>p.c===c.code);
+            if(pr&&pr.d)return true;
+          }
+          return false;
+        });
         if(withDef.length>0)winner=withDef[0];
       }
-      // 3. Otherwise first alphabetically
+      // 3. Otherwise first alphabetically.
       if(!winner){
         cands.sort((a,b)=>(a.pfx||"").localeCompare(b.pfx||""));
         winner=cands[0];
@@ -1185,12 +1262,18 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
       }
     }else{
       if(prefix && (ONTOS[prefix]||STD_PROPS[prefix])){
-        if(ONTOS[prefix])(ONTOS[prefix].props||[]).forEach(p=>out.push({code:p.c,label:p.l||p.c,pfx:prefix}));
-        if(STD_PROPS[prefix])STD_PROPS[prefix].forEach(x=>out.push({code:x[0],label:x[1],pfx:prefix}));
+        if(ONTOS[prefix])(ONTOS[prefix].props||[]).forEach(p=>out.push({code:p.c,label:p.l||p.c,pfx:prefix,u:p.u}));
+        if(STD_PROPS[prefix])STD_PROPS[prefix].forEach(x=>{
+          const u=STD_PREFIXES[prefix]?STD_PREFIXES[prefix]+x[0]:"";
+          out.push({code:x[0],label:x[1],pfx:prefix,u:u});
+        });
         if(H.seenP[prefix]){const auth=ONTOS[prefix]&&(ONTOS[prefix].props||[]).length>0;if(!auth)H.seenP[prefix].forEach(lo=>out.push({code:lo,label:lo,pfx:prefix}));}
       }else{
-        Object.keys(ONTOS).forEach(p=>(ONTOS[p].props||[]).forEach(pr=>out.push({code:pr.c,label:(pr.l||pr.c)+"  \u00b7  "+p,pfx:p})));
-        Object.keys(STD_PROPS).forEach(p=>STD_PROPS[p].forEach(x=>out.push({code:x[0],label:x[1]+"  \u00b7  "+p,pfx:p})));
+        Object.keys(ONTOS).forEach(p=>(ONTOS[p].props||[]).forEach(pr=>out.push({code:pr.c,label:(pr.l||pr.c)+"  \u00b7  "+p,pfx:p,u:pr.u})));
+        Object.keys(STD_PROPS).forEach(p=>STD_PROPS[p].forEach(x=>{
+          const u=STD_PREFIXES[p]?STD_PREFIXES[p]+x[0]:"";
+          out.push({code:x[0],label:x[1]+"  \u00b7  "+p,pfx:p,u:u});
+        }));
         Object.keys(H.seenP||{}).forEach(p=>{const auth=ONTOS[p]&&(ONTOS[p].props||[]).length>0;if(!auth)H.seenP[p].forEach(lo=>out.push({code:lo,label:lo+"  \u00b7  "+p,pfx:p}));});
       }
     }
@@ -1246,8 +1329,8 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
   function acRender(){acEnsure();if(!acItems.length){acEl.innerHTML='<div class="acempty">no matches \u2014 keep typing</div>';acEl.classList.add("show");acPlace();return;}let s="";acItems.forEach((it,i)=>{const lab=esc(it.label||it.code);const code=(it.code&&it.code!==it.label)?'<span class="acc">'+esc(it.code)+'</span>':"";const altChip=it._altCount?'<span class="acalt" data-i="'+i+'">+'+it._altCount+' namespace'+(it._altCount>1?'s':'')+'</span>':"";s+='<div class="acrow'+(i===acIdx?' sel':'')+'" data-i="'+i+'"><span class="acl">'+lab+'</span>'+code+altChip+'</div>';});acEl.innerHTML=s;acEl.classList.add("show");acPlace();}
   let acSrvTok=0,acSrvTimer=null;
   function acServer(){if(!acTarget)return;const pfx=acPrefix,kind=acKind,q=(acTarget.value||"").trim();if(!ONTOS[pfx]||!ONTOS[pfx].searchable)return;const tok=++acSrvTok;
-    _papi("/api/refsearch?prefix="+encodeURIComponent(pfx)+"&kind="+(kind==="rel"?"prop":"class")+"&q="+encodeURIComponent(q)+"&limit=50").then(d=>{if(tok!==acSrvTok||!acTarget||acPrefix!==pfx)return;const add=(d.results||[]).map(x=>({code:x.code,label:x.label||x.code,lc:(x.label||"").toLowerCase(),cc:(x.code||"").toLowerCase(),pfx:pfx}));const merged=acDedupByIRI(add.concat(acItems));acItems=merged.slice(0,60);if(acIdx<0&&acItems.length)acIdx=0;acRender();}).catch(()=>{});}
-  function acFilter(q){if(!acTarget)return;q=(q||"").trim().toLowerCase();if(acKind==="val"&&q[0]==='"'){acClose();return;}let items;if(!q){const sorted=acAll.slice().sort((a,b)=>a.lc.length-b.lc.length);const deduped=acDedupByIRI(sorted);items=acGroupByLabel(deduped).slice(0,60);}else{const fz=acAll.length<=20000;const sc=[];for(let k=0;k<acAll.length;k++){const it=acAll[k];const v=acScore(q,it.lc,it.cc,fz,it.ac);if(v>0){it._s=v;sc.push(it);}if(sc.length>6000)break;}sc.sort((a,b)=>b._s-a._s);const deduped=acDedupByIRI(sc);items=acGroupByLabel(deduped).slice(0,60);}acItems=items;acIdx=items.length?0:-1;if(acTarget&&ONTOS[acPrefix]&&ONTOS[acPrefix].searchable){clearTimeout(acSrvTimer);acSrvTimer=setTimeout(acServer,140);}acRender();}
+    _papi("/api/refsearch?prefix="+encodeURIComponent(pfx)+"&kind="+(kind==="rel"?"prop":"class")+"&q="+encodeURIComponent(q)+"&limit=50").then(d=>{if(tok!==acSrvTok||!acTarget||acPrefix!==pfx)return;const add=(d.results||[]).map(x=>({code:x.code,label:x.label||x.code,lc:(x.label||"").toLowerCase(),cc:(x.code||"").toLowerCase(),pfx:pfx}));const merged=acDedupByIRI(add.concat(acItems),kind);acItems=merged.slice(0,60);if(acIdx<0&&acItems.length)acIdx=0;acRender();}).catch(()=>{});}
+  function acFilter(q){if(!acTarget)return;q=(q||"").trim().toLowerCase();if(acKind==="val"&&q[0]==='"'){acClose();return;}let items;if(!q){const sorted=acAll.slice().sort((a,b)=>a.lc.length-b.lc.length);const deduped=acDedupByIRI(sorted,acKind);items=acGroupByLabel(deduped,acKind).slice(0,60);}else{const fz=acAll.length<=20000;const sc=[];for(let k=0;k<acAll.length;k++){const it=acAll[k];const v=acScore(q,it.lc,it.cc,fz,it.ac);if(v>0){it._s=v;sc.push(it);}if(sc.length>6000)break;}sc.sort((a,b)=>b._s-a._s);const deduped=acDedupByIRI(sc,acKind);items=acGroupByLabel(deduped,acKind).slice(0,60);}acItems=items;acIdx=items.length?0:-1;if(acTarget&&ONTOS[acPrefix]&&ONTOS[acPrefix].searchable){clearTimeout(acSrvTimer);acSrvTimer=setTimeout(acServer,140);}acRender();}
   // ==========================================================================
   // Autocomplete: the pickers for relations and values.
   // ==========================================================================
