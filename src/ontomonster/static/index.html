@@ -1007,6 +1007,81 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
   function acHarvest(){const seenV={},seenP={};(terms||[]).forEach(t=>(t.children||[]).forEach(r=>{const v=((r&&r.val)||"").trim();if(v&&v[0]!=='"'&&v[0]!=="<"&&v.indexOf(":")>0){const i=v.indexOf(":"),p=v.slice(0,i),lo=v.slice(i+1);if(lo)(seenV[p]=seenV[p]||new Set()).add(lo);}const pr=((r&&r.pred)||"");if(pr.indexOf(":")>0){const i=pr.indexOf(":"),p=pr.slice(0,i),lo=pr.slice(i+1);if(lo)(seenP[p]=seenP[p]||new Set()).add(lo);}}));return {seenV,seenP};}
   let acEl=null,acTarget=null,acKind="val",acPrefix="",acAll=[],acItems=[],acIdx=-1,acChoosing=false;
   function _termAltText(t){var s=[];(t.children||[]).forEach(function(c){if(c.pred==="skos:altLabel"||c.pred==="skos:prefLabel"){var v=litDisp(c.val);if(v)s.push(v);}});return s.join(" ");}
+  // Debug helper for measuring autocomplete candidates
+  window.__dbgCand=function(query){
+    if(!query){console.log("Usage: __dbgCand('gram') or __dbgCand('information content')");return;}
+    const cands=acCandidates("val","");
+    console.log("=== ALL CANDIDATES (before dedup, before 60-row cap) ===");
+    console.log("Total:",cands.length);
+    console.table(cands.map(it=>{
+      let u="";
+      if(it.pfx&&ONTOS[it.pfx]&&ONTOS[it.pfx].classes&&ONTOS[it.pfx].classes[it.code]){
+        u=ONTOS[it.pfx].classes[it.code].u||"";
+      }
+      return {
+        onto_key:it.pfx||"(own)",
+        code:it.code,
+        label:it.label,
+        u:u,
+        pfx:it.pfx
+      };
+    }));
+    console.log("\n=== GROUPING BY u (full IRI) ===");
+    const byU={};
+    cands.forEach(it=>{
+      let u="";
+      if(it.pfx&&ONTOS[it.pfx]&&ONTOS[it.pfx].classes&&ONTOS[it.pfx].classes[it.code]){
+        u=ONTOS[it.pfx].classes[it.code].u||"";
+      }
+      if(u){
+        if(!byU[u])byU[u]=[];
+        byU[u].push({onto:it.pfx,code:it.code,label:it.label});
+      }
+    });
+    Object.keys(byU).forEach(u=>{
+      if(byU[u].length>1){
+        console.log(u,"->",byU[u].length,"copies:",byU[u]);
+      }
+    });
+    console.log("\n=== GROUPING BY normalized label (lower-case) ===");
+    const byLabel={};
+    cands.forEach(it=>{
+      const norm=(it.label||"").toLowerCase().trim();
+      if(norm){
+        if(!byLabel[norm])byLabel[norm]=[];
+        let u="";
+        if(it.pfx&&ONTOS[it.pfx]&&ONTOS[it.pfx].classes&&ONTOS[it.pfx].classes[it.code]){
+          u=ONTOS[it.pfx].classes[it.code].u||"";
+        }
+        byLabel[norm].push({onto:it.pfx,code:it.code,u:u});
+      }
+    });
+    Object.keys(byLabel).forEach(label=>{
+      if(byLabel[label].length>1){
+        console.log(label,"->",byLabel[label].length,"entries:",byLabel[label]);
+      }
+    });
+    console.log("\n=== FILTERED FOR QUERY:",query,"===");
+    const q=query.toLowerCase().trim();
+    const matches=cands.filter(it=>{
+      const lc=(it.label||"").toLowerCase();
+      const cc=(it.code||"").toLowerCase();
+      return lc.indexOf(q)>=0||cc.indexOf(q)>=0;
+    });
+    console.log("Matching rows:",matches.length);
+    console.table(matches.map(it=>{
+      let u="";
+      if(it.pfx&&ONTOS[it.pfx]&&ONTOS[it.pfx].classes&&ONTOS[it.pfx].classes[it.code]){
+        u=ONTOS[it.pfx].classes[it.code].u||"";
+      }
+      return {
+        onto_key:it.pfx||"(own)",
+        code:it.code,
+        label:it.label,
+        u:u
+      };
+    }));
+  };
   function acCandidates(kind,prefix){const out=[];const H=acHarvest();
     if(kind==="val"){
       // The own terms (always offered for references to itself).
