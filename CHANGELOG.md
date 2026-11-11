@@ -3,20 +3,24 @@
 This file lists all notable changes to OntoMonster. The project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.0.0] - Not yet formally released
 
-### Added
+OntoMonster is a local tool that helps you build 
+ontologies that align with BFO and CCO. It has autofill from reference 
+ontologies, a consistency scan, and validated export. Everything runs on 
+your computer.
+
+### Recent Additions (pre-release)
+
+**OWL/XML Support**
 - Native OWL/XML reader. Ontologies in OWL/XML format (like cto.owl)
   now load correctly. The reader uses streaming parse for memory
   efficiency and handles prefix declarations, class/property
   declarations, subclass axioms, annotations, domains, ranges, and
   property hierarchies. Complex class expressions (restrictions) are
   ignored and counted at DEBUG level.
-- BFO alignment badges in reference list and glossary. Shows
-  structural BFO alignment status when available from catalog.json.
-- BFO-aligned filter toggle in autofill (off by default).
 
-### Changed
+**Performance Optimizations**
 - Reduced startup noise. Diagnostic messages moved to DEBUG level.
   Set ONTO_MONSTER_LOG=debug to see them. Default console shows only
   the startup URL and errors.
@@ -26,22 +30,12 @@ This file lists all notable changes to OntoMonster. The project uses
   (up to 6 workers). Largest files start first.
 - Progressive polling. UI polls at 500ms, increases to 1000ms after
   5 seconds.
-- Light status endpoint uses GET with query param instead of POST.
-  After refcache build, UI calls /api/project/status?light=1 to skip
-  org scan.
 
-### Fixed
+**Bug Fixes**
+- Fixed 405 error on /api/project/status. Route now accepts GET with
+  query parameters (?light=1) instead of POST with body.
 - Removed /api/refcache/progress from uvicorn access log to reduce
   noise.
-- Fixed 405 error on /api/project/status. Route accepts GET with query
-  parameters instead of POST with body.
-
-## [1.0.0] - 2026-11-05
-
-First public release. OntoMonster is a local tool that helps you build 
-ontologies that align with BFO and CCO. It has autofill from reference 
-ontologies, a consistency scan, and validated export. Everything runs on 
-your computer.
 
 ### Projects and structure
 
