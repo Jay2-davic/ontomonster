@@ -126,6 +126,10 @@
   .vtctrl button.vtapply{margin-top:6px;padding:5px 13px;border:none;background:var(--focus,#1478c8);color:#fff;border-radius:7px;cursor:pointer;font-size:12.5px;font-weight:600}
   .vtctrl input.vtsetname{width:100%;box-sizing:border-box;font-family:var(--mono);font-size:12.5px;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:5px 8px}
   .vtctrl .vtsethint{display:block;margin-top:6px;font-size:11px;color:var(--muted)}
+  .invctrl{display:flex;align-items:center;gap:10px;margin:8px 2px 2px;padding:7px 9px;background:var(--warn-bg,#fef8e8);border:1px solid var(--line,#e4e4e8);border-radius:8px;font-size:12.5px}
+  .invctrl .invlbl{color:var(--ink);font-weight:550;white-space:nowrap}
+  .invctrl select.invsel{flex:1;font-family:var(--mono);font-size:12.5px;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px 7px}
+  .derived-row{background:color-mix(in srgb,var(--muted) 3%,transparent)}
   .addrow .plus{width:18px;height:18px;border:1.4px solid var(--active);border-radius:5px;display:inline-flex;align-items:center;justify-content:center;font-size:13px;line-height:1}
   .mapcard{position:sticky;top:18px}
   .maptabs{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;margin:0 4px 8px}
@@ -766,7 +770,7 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
   const PFXCOLOR={cco:"t-cco",rdfs:"t-rdfs",skos:"t-skos",rdf:"t-rdf",xsd:"t-xsd",owl:"t-owl"};
   function pfxClass(s){return s===""?"t-mine":(PFXCOLOR[s]||"t-other");}
   function localOf(name){const i=(name||"").indexOf(":");if(i<0)return name||"";const p=name.slice(0,i);return p===userPrefix?name.slice(i+1):name;}
-  function isHiddenTypeRow(c){if(!c)return false;if(c.pred==="om:closedEnum"||c.pred==="om:valueType"||c.pred==="om:valueSet"||c.pred==="om:enumValue"||c.pred==="om:valueSetRef")return true;if(c.pred!=="rdf:type")return false;const v=String(c.val||"");const lo=(parts(v).local||localOf(v));return v==="owl:NamedIndividual"||v==="owl:Class"||lo==="NamedIndividual"||lo==="Class";}
+  function isHiddenTypeRow(c){if(!c)return false;if(c.pred==="om:closedEnum"||c.pred==="om:valueType"||c.pred==="om:valueSet"||c.pred==="om:enumValue"||c.pred==="om:valueSetRef"||c.pred==="om:inverseOf")return true;if(c.pred!=="rdf:type")return false;const v=String(c.val||"");const lo=(parts(v).local||localOf(v));return v==="owl:NamedIndividual"||v==="owl:Class"||lo==="NamedIndividual"||lo==="Class";}
   function isCatRow(c){return !!c&&(c.pred==="rdf:type"||c.pred==="rdfs:subClassOf");}
   function primaryCat(fam){return (fam||[]).find(c=>isCatRow(c)&&!isHiddenTypeRow(c))||(fam||[]).find(c=>isCatRow(c))||null;}
   function esc(s){return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
@@ -1372,6 +1376,175 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
     if(invCurie)return relDisplay(invCurie);
     return "inverse";
   }
+  // Get the inverse curie for a predicate. Returns curie or null.
+  function _getInverseCurie(curie){
+    if(_predIsSymmetric(curie))return null;
+    const invIRIs=_predInverseIRIs(curie);
+    if(!invIRIs||invIRIs.length===0)return null;
+    return _iriToCurie(invIRIs[0]);
+  }
+  // Check if a node value refers to a class (vs an individual).
+  function _isClassValue(val){
+    if(!val||val.trim()==="")return false;
+    const pp=parts(val);
+    if(pp.lit)return false;
+    if(pp.sel===""||!isOnto(pp.sel))return false;
+    return isClass(pp.sel,pp.local);
+  }
+  // Remove all generated inverse rows for a source row ID.
+  function _removeGeneratedInverseRows(sourceId){
+    const t=current();
+    if(!t)return;
+    t.children=t.children.filter(c=>c._generatedFrom!==sourceId);
+  }
+  // Create or update the generated inverse row for a source row.
+  function _updateGeneratedInverseRow(sourceNode){
+    const t=current();
+    if(!t||!sourceNode.writeInverse)return;
+    // Remove any existing generated row.
+    _removeGeneratedInverseRows(sourceNode.id);
+    // Get the inverse predicate.
+    const invCurie=_getInverseCurie(sourceNode.pred);
+    if(!invCurie)return;
+    // Determine if both subject and value are classes.
+    const subjIsClass=_isCurrentTermClass();
+    const valIsClass=_isClassValue(sourceNode.val);
+    // Generate the inverse row.
+    let invRow;
+    if(subjIsClass&&valIsClass){
+      // Class-to-class: write "B subClassOf (inverse some A)" restriction.
+      // Store as a derived row that shows the inverse restriction.
+      invRow={
+        id:nid(),
+        pred:"rdfs:subClassOf",
+        val:"<restriction>",
+        dtype:"xsd:string",
+        dtAuto:true,
+        _generatedFrom:sourceNode.id,
+        _inverseRestriction:{
+          inverseProp:invCurie,
+          someClass:t.name
+        }
+      };
+    }else{
+      // Individuals: write direct assertion "y inverse x".
+      invRow={
+        id:nid(),
+        pred:invCurie,
+        val:t.name,
+        dtype:"xsd:string",
+        dtAuto:true,
+        _generatedFrom:sourceNode.id
+      };
+    }
+    t.children.push(invRow);
+  }
+  // Check if the current term is a class (has rdfs:subClassOf category).
+  function _isCurrentTermClass(){
+    const t=current();
+    if(!t)return false;
+    const pcat=primaryCat(t.children);
+    return pcat&&pcat.pred==="rdfs:subClassOf";
+  }
+  // Collect all properties from loaded ontologies and workspace terms.
+  // Returns array of {curie, label} objects.
+  function _allProperties(){
+    const props=[];
+    // Add loaded properties from ONTOS.
+    for(const pfx in ONTOS){
+      const o=ONTOS[pfx];
+      if(o.props){
+        o.props.forEach(pr=>{
+          const curie=pfx+":"+pr.c;
+          props.push({curie:curie,label:pr.l||pr.c});
+        });
+      }
+    }
+    // Add workspace properties: terms with rdf:type property declarations.
+    (terms||[]).forEach(t=>{
+      if(_owlIsProperty(t)){
+        props.push({curie:t.name,label:ownLabel(t)||localOf(t.name)});
+      }
+    });
+    return props;
+  }
+  // Get the inverse curie stored in term as om:inverseOf relationship.
+  // Returns curie string or null.
+  function _getOwnInverse(t){
+    if(!t)return null;
+    const c=(t.children||[]).find(r=>r.pred==="om:inverseOf"&&(r.val||"").trim());
+    return c?c.val:null;
+  }
+  // Set the inverse relationship bidirectionally. Updates both property
+  // terms. Pass null to clear inverse.
+  function _setInverse(propTerm,inverseCurie){
+    if(!propTerm)return;
+    // Remove existing om:inverseOf from propTerm.
+    propTerm.children=(propTerm.children||[]).filter(c=>c.pred!=="om:inverseOf");
+    // Add new inverse if provided.
+    if(inverseCurie&&inverseCurie.trim()){
+      propTerm.children.push({
+        id:nid(),
+        pred:"om:inverseOf",
+        val:inverseCurie.trim(),
+        dtype:"xsd:string",
+        dtAuto:true
+      });
+    }
+    // Update the other side bidirectionally.
+    if(inverseCurie){
+      const otherTerm=terms.find(t=>t.name===inverseCurie);
+      if(otherTerm&&_owlIsProperty(otherTerm)){
+        // Remove existing om:inverseOf from other term.
+        otherTerm.children=(otherTerm.children||[]).filter(c=>c.pred!=="om:inverseOf");
+        // Point back to this property.
+        otherTerm.children.push({
+          id:nid(),
+          pred:"om:inverseOf",
+          val:propTerm.name,
+          dtype:"xsd:string",
+          dtAuto:true
+        });
+      }
+    }
+    wsMarkDirty(true);
+  }
+  // Compute derived incoming relationships for a term. Returns array of
+  // row-like objects with .derived=true flag.
+  function _derivedIncoming(t){
+    if(!t)return [];
+    const derived=[];
+    // Scan all terms for references to this term.
+    (terms||[]).forEach(srcTerm=>{
+      if(srcTerm.id===t.id)return; // Skip self.
+      (srcTerm.children||[]).forEach(c=>{
+        if((c.val||"").trim()===t.name||(c.val||"").trim()===localOf(t.name)){
+          // This term is referenced. Check if pred has an inverse.
+          const invIRIs=_predInverseIRIs(c.pred);
+          const sym=_predIsSymmetric(c.pred);
+          if(invIRIs||sym){
+            // Construct derived row.
+            let invLabel;
+            if(sym){
+              invLabel=relDisplay(c.pred);
+            }else if(invIRIs){
+              const invCurie=_iriToCurie(invIRIs[0]);
+              invLabel=invCurie?relDisplay(invCurie):"inverse";
+            }
+            derived.push({
+              id:"_derived_"+nid(),
+              pred:invLabel||"inverse",
+              val:srcTerm.name,
+              dtype:"xsd:string",
+              dtAuto:true,
+              derived:true  // Mark as derived.
+            });
+          }
+        }
+      });
+    });
+    return derived;
+  }
 
   function duplicateTerm(){var t=current();if(!t)return;
     var base=localOf(t.name)||"term";var name=userPrefix+":"+base+"_copy",n=2;
@@ -1425,10 +1598,27 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
         +'<button id="fieldEnumApply" class="vtapply" type="button">Apply set</button>'
         +'<span class="vtsethint">Editing values updates every field that uses this set.</span></div></div></div>';
       gh.appendChild(vtw);}
+    // PART 2: Inverse field for property terms.
+    if(_owlIsProperty(t)){
+      const invw=document.createElement("div");invw.className="invctrl";
+      const allProps=_allProperties();
+      const curInv=_getOwnInverse(t);
+      let invOpts='<option value="">— none —</option>';
+      allProps.forEach(p=>{
+        if(p.curie!==t.name){  // Do not allow inverse to self.
+          invOpts+='<option value="'+escA(p.curie)+'"'+(p.curie===curInv?' selected':'')+'>'+esc(p.label)+'</option>';
+        }
+      });
+      invw.innerHTML='<div class="invlbl">Inverse property:</div><select id="propInversePick" class="invsel">'+invOpts+'</select>';
+      gh.appendChild(invw);
+    }
     treeEl.appendChild(gh);
     var _db=document.getElementById("dupTermBtn");if(_db)_db.onclick=duplicateTerm;
     const kids=document.createElement("div");kids.className="kids";const ch=document.createElement("div");ch.className="colhead";ch.innerHTML='<span>relationship</span><span>value</span><span></span>';kids.appendChild(ch);
     t.children.forEach(c=>{if(isHiddenTypeRow(c))return;kids.appendChild(rowEl(c));});   // owl:Class and owl:NamedIndividual are hidden meta-declarations.
+    // PART 3: Add derived incoming rows.
+    const derivedRows=_derivedIncoming(t);
+    derivedRows.forEach(dr=>{kids.appendChild(rowEl(dr));});
     const add=document.createElement("div");add.className="addrow";add.id="addrow";add.innerHTML='<span class="plus">+</span> add relationship';
     const arwrap=document.createElement("div");arwrap.style.cssText="display:flex;gap:8px;flex-wrap:wrap;align-items:center";
     arwrap.appendChild(add);kids.appendChild(arwrap);
@@ -1437,6 +1627,44 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
 
   function autoGrowTA(el){if(!el||el.dataset.manual)return;el.style.height="auto";el.style.height=Math.min(el.scrollHeight+2,220)+"px";}
   function rowEl(node){const r=document.createElement("div");r.className="row";r.dataset.id=node.id;
+    // PART 3: Handle derived incoming rows (read-only).
+    if(node.derived){
+      r.className="row derived-row";
+      r.style.opacity="0.6";
+      r.title="Derived incoming relationship (not stored)";
+      const pp=parts(node.val);
+      const dispVal=pp.lit?litDisp(node.val):(ownTermOf(node.val)?ownLabel(ownTermOf(node.val)):dispText(node.val));
+      r.innerHTML='<div><span class="lockrel" style="font-style:italic">'+esc(node.pred)+' <span style="font-weight:600">←</span></span></div>'
+        +'<span class="childcell" style="color:var(--muted)">'+esc(dispVal)+'</span>'
+        +'<span style="width:32px"></span>';  // Empty space for alignment.
+      return r;
+    }
+    // PART 4: Handle generated inverse rows (read-only, shows written inverse).
+    if(node._generatedFrom){
+      r.className="row generated-inv-row";
+      r.style.opacity="0.7";
+      r.style.background="rgba(138,138,142,0.04)";
+      let title="Generated inverse assertion (not saved separately)";
+      let dispVal="";
+      let warning="";
+      if(node._inverseRestriction){
+        // Class restriction case.
+        const invPred=relDisplay(node._inverseRestriction.inverseProp);
+        const cls=dispText(node._inverseRestriction.someClass);
+        dispVal="("+invPred+" some "+cls+")";
+        title+=" — This asserts that every instance of this class has this relation to some "+cls+". It is a stronger claim than the first relation.";
+        warning='<span class="cau" data-tip="This asserts that every B has this relation to some A. It is a stronger claim than the first relation." style="margin-left:6px">⚠</span>';
+      }else{
+        // Individual case.
+        const pp=parts(node.val);
+        dispVal=pp.lit?litDisp(node.val):dispText(node.val);
+      }
+      r.innerHTML='<div><span class="lockrel" style="font-style:italic;color:var(--muted)">'+esc(relDisplay(node.pred))+' <span style="font-weight:600">⇄</span></span></div>'
+        +'<span class="childcell" style="color:var(--muted)">'+esc(dispVal)+warning+'</span>'
+        +'<span style="width:32px"></span>';
+      r.title=title;
+      return r;
+    }
     const isType=node.pred==="rdf:type";const isLabelDef=(node.pred==="rdfs:label"||node.pred==="skos:definition");
     const _fam=(current()&&current().children)||[];
     const primaryCatId=(primaryCat(_fam)||{}).id;
@@ -1446,7 +1674,7 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
     const lockDel=isLabelDef?(node.id===_first):(isCat&&node.id===primaryCatId);
     let relCell;
     if(required){if(isCat){relCell='<span class="lockrel catlock" title="'+escA("The category this term connects to. Switch between rdf:type (an instance of a class) and rdfs:subClassOf (a kind of a class). Required.")+'"><span class="lk">&#128274;</span><select class="catsel" data-catsel="'+node.id+'"><option value="rdf:type"'+(node.pred==="rdf:type"?" selected":"")+'>type</option><option value="rdfs:subClassOf"'+(node.pred==="rdfs:subClassOf"?" selected":"")+'>subclass of</option></select><span class="req-dot">*</span></span>';}else{const m=REQ_META[node.pred]||{name:relName(node.pred)};relCell='<span class="lockrel" title="'+escA(relTip(node.pred))+'"><span class="lk">&#128274;</span>'+esc(m.name)+' <span class="req-dot">*</span></span>';}}
-    else{const rp=predParts(node.pred);const rsel=((rp.local===""&&node.relPfx!=null)?node.relPfx:rp.sel);const rlist="dl-rel-"+(rsel||"mine");relCell='<span class="relcell"><select class="pfxsel '+pfxClass(rsel)+'" data-relpfx="'+node.id+'">'+relPfxOpts(rsel)+'</select>'+'<input class="rel" data-rel="'+node.id+'" title="'+escA(relTip(node.pred))+'" value="'+escA(relDisplay(node.pred))+'" placeholder="relationship…" autocomplete="off">'+(function(){var _r=predCaution(node);return _r?'<span class="cau" data-tip="'+escA(_r)+'">\u26A0</span>':"";})()+'</span>';const _invLbl=_inverseChipLabel(node.pred);const _invChip=_invLbl?'<span class=\"rowinv\" title=\"Declared inverse\">\u21C4 '+esc(_invLbl)+'</span>':\"\" ;relCell+=_invChip+'</span>';}
+    else{const rp=predParts(node.pred);const rsel=((rp.local===""&&node.relPfx!=null)?node.relPfx:rp.sel);const rlist="dl-rel-"+(rsel||"mine");relCell='<span class="relcell"><select class="pfxsel '+pfxClass(rsel)+'" data-relpfx="'+node.id+'">'+relPfxOpts(rsel)+'</select>'+'<input class="rel" data-rel="'+node.id+'" title="'+escA(relTip(node.pred))+'" value="'+escA(relDisplay(node.pred))+'" placeholder="relationship…" autocomplete="off">'+(function(){var _r=predCaution(node);return _r?'<span class="cau" data-tip="'+escA(_r)+'">\u26A0</span>':"";})()+'</span>';const _invLbl=_inverseChipLabel(node.pred);const _invChip=_invLbl?'<span class=\"rowinv\" title=\"Declared inverse\">\u21C4 '+esc(_invLbl)+'</span>':\"\" ;const _hasInv=_predInverseIRIs(node.pred);const _isSym=_predIsSymmetric(node.pred);const _invSwitch=(_hasInv&&!_isSym)?'<label style=\"display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);margin-left:4px\" title=\"Write inverse assertion\"><input type=\"checkbox\" class=\"inv-switch\" data-invswitch=\"'+node.id+'\"'+(node.writeInverse?' checked':'')+'>write inverse</label>':'';relCell+=_invChip+_invSwitch+'</span>';}
     let valCell;
     if(litValued(node.pred)){const issues=valIssues(node);const _t=REQ_META[node.pred]?REQ_META[node.pred].def:relTip(node.pred);const _dtb=(dtRange(node.pred)===XSD_NS+"boolean");if(_dtb){const _bc=(litDisp(node.val)||"").trim().toLowerCase();valCell='<span class="childcell"><select class="boolsel'+(issues.length?' bad-shape':'')+'" data-boolsel="'+node.id+'"><option value=""'+(_bc===""?" selected":"")+'>\u2014</option><option value="true"'+(_bc==="true"?" selected":"")+'>true</option><option value="false"'+(_bc==="false"?" selected":"")+'>false</option></select></span>';}else if(noteValued(node.pred)){valCell='<span class="childcell"><input class="child'+(issues.length?' bad-shape':'')+'" data-val="'+node.id+'" data-mode="lit" list="dl-note-vocab" title="'+escA([_t].concat(issues).filter(Boolean).join("  \u2014  "))+'" value="'+escA(litDisp(node.val))+'" placeholder="note, or pick a comparator/delta"></span>';}
       else valCell='<span class="childcell"><textarea class="child'+(issues.length?' bad-shape':'')+'" data-val="'+node.id+'" data-mode="lit" rows="1" title="'+escA([_t].concat(issues).filter(Boolean).join("  \u2014  "))+'" placeholder="plain text">'+esc(litDisp(node.val))+'</textarea></span>';}
@@ -1534,16 +1762,17 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
         if(oldN&&oldN!==t.name){renameRefs(localOf(oldN),localOf(t.name));buildMine();render();}};
     }
     treeEl.querySelectorAll("[data-relpfx]").forEach(s=>s.onchange=e=>{const c=find(s.dataset.relpfx);if(!c)return;c.relPfx=e.target.value;s.className="pfxsel "+pfxClass(e.target.value);rebuildPred(c);render();});
-    treeEl.querySelectorAll("[data-rel]").forEach(inp=>{inp.onfocus=()=>lastFocused=inp;inp.onchange=()=>{if(acChoosing)return;const c=find(inp.dataset.rel);if(!c)return;rebuildPred(c);render();};});
+    treeEl.querySelectorAll("[data-rel]").forEach(inp=>{inp.onfocus=()=>lastFocused=inp;inp.onchange=()=>{if(acChoosing)return;const c=find(inp.dataset.rel);if(!c)return;rebuildPred(c);if(c.writeInverse){_updateGeneratedInverseRow(c);}render();};});
     treeEl.querySelectorAll("[data-pfx]").forEach(s=>s.onchange=e=>{const c=find(s.dataset.pfx);if(!c)return;c.pfx=e.target.value;s.className="pfxsel "+pfxClass(e.target.value);rebuildTerm(c);render();});
     treeEl.querySelectorAll('[data-val][data-mode="lit"]').forEach(inp=>{inp.oninput=e=>{const c=find(inp.dataset.val);if(!c)return;const txt=e.target.value;c.val=txt.trim()===""?"":'"'+txt+'"';const issues=valIssues(c);inp.classList.toggle("bad-shape",issues.length>0);var _d=REQ_META[c.pred]?REQ_META[c.pred].def:relName(c.pred);inp.title=[_d].concat(issues).filter(Boolean).join("  \u2014  ");softRefresh();};});
     treeEl.querySelectorAll('[data-catsel]').forEach(sel=>{sel.onchange=e=>{const c=find(sel.dataset.catsel);if(!c)return;c.pred=e.target.value;wsMarkDirty(true);render();};});
     treeEl.querySelectorAll('[data-boolsel]').forEach(sel=>{sel.onchange=e=>{const c=find(sel.dataset.boolsel);if(!c)return;const v=e.target.value;c.val=v===""?"":'"'+v+'"';wsMarkDirty(true);render();};});
     treeEl.querySelectorAll('[data-val][data-mode="term"]').forEach(inp=>{inp.onfocus=()=>lastFocused=inp;
       inp.oninput=e=>{const c=find(inp.dataset.val);if(!c)return;const raw=e.target.value;const lit=raw.trim().startsWith('"');const slot=treeEl.querySelector('[data-pfxslot="'+c.id+'"]'),wrap=treeEl.querySelector('[data-dtwrap="'+c.id+'"]');if(slot)slot.style.display=lit?"none":"";if(wrap)wrap.style.display=lit?"":"none";rebuildTerm(c,raw);if(lit&&c.dtAuto){c.dtype=inferDtype(c.val);if(wrap){var dts=wrap.querySelector(".dt");if(dts)dts.value=c.dtype;}}const issues=valIssues(c);inp.classList.toggle("bad-shape",issues.length>0);inp.title=[valDef(c.val)].concat(issues).filter(Boolean).join("  \u2014  ");softRefresh();};
-      inp.onchange=()=>{if(acChoosing)return;const c=find(inp.dataset.val);if(!c)return;resolveValCommit(c);maybeAddTerm(c);if(!parts(c.val).lit)inp.value=dispText(c.val);};});
+      inp.onchange=()=>{if(acChoosing)return;const c=find(inp.dataset.val);if(!c)return;resolveValCommit(c);maybeAddTerm(c);if(!parts(c.val).lit)inp.value=dispText(c.val);if(c.writeInverse){_updateGeneratedInverseRow(c);}};});
     treeEl.querySelectorAll("[data-dt]").forEach(s=>s.onchange=e=>{const c=find(s.dataset.dt);if(c){c.dtype=e.target.value;c.dtAuto=false;}});
-    treeEl.querySelectorAll("[data-del]").forEach(d=>{if(d.classList.contains("locked"))return;d.onclick=()=>{const t=current();t.children=t.children.filter(c=>c.id!==d.dataset.del);render();};});
+    treeEl.querySelectorAll("[data-del]").forEach(d=>{if(d.classList.contains("locked"))return;d.onclick=()=>{const t=current();const delId=d.dataset.del;_removeGeneratedInverseRows(delId);t.children=t.children.filter(c=>c.id!==delId);render();};});
+    treeEl.querySelectorAll("[data-invswitch]").forEach(sw=>{sw.onchange=e=>{const c=find(sw.dataset.invswitch);if(!c)return;c.writeInverse=e.target.checked;if(c.writeInverse){_updateGeneratedInverseRow(c);}else{_removeGeneratedInverseRows(c.id);}render();};});
     var ar=document.getElementById("addrow");if(ar)ar.onclick=()=>addRow();
     var wi=document.getElementById("wizInline");if(wi)wi.onclick=openWizard;
     var fvt=document.getElementById("fieldVT");if(fvt)fvt.onchange=function(){var c=current();if(!c)return;
@@ -1575,6 +1804,13 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
       var name=(nm?nm.value:"").trim();var vals=(ta?ta.value:"").split(/\r?\n/).map(function(s){return s.trim();}).filter(Boolean);
       if(!name){toast("Name the value set");if(nm)nm.focus();return;}
       if(!vals.length){toast("Enter at least one value");if(ta)ta.focus();return;}
+    // PART 2: Bind inverse property picker.
+    var pip=document.getElementById("propInversePick");if(pip)pip.onchange=function(){
+      var t=current();if(!t||!_owlIsProperty(t))return;
+      var invCurie=pip.value||null;
+      _setInverse(t,invCurie);
+      render();  // Refresh to show bidirectional update.
+    };
       var vs=upsertValueSet(name,name,vals);setFieldSet(c,localOf(vs.name));};
     treeEl.querySelectorAll("textarea.child").forEach(function(ta){autoGrowTA(ta);
       ta.addEventListener("input",function(){autoGrowTA(ta);});
@@ -3575,12 +3811,25 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
   function setProjectBar(){var el=document.getElementById("pName");if(el&&PROJECT)el.textContent=PROJECT.name+"  ·  "+PROJECT.prefix+":";}
 
   function citedFrom(terms){var set={};(terms||[]).forEach(t=>(t.children||[]).forEach(c=>{var v=c.val||"";var m=/^([A-Za-z][\w-]*):/.exec(v);if(m&&ONTOS[m[1]])set[m[1]]=1;}));return Object.keys(set);}
+  // Filter out generated inverse rows and internal fields before save.
+  function _cleanTermsForSave(terms){
+    return (terms||[]).map(t=>({
+      ...t,
+      children:(t.children||[]).filter(c=>!c._generatedFrom).map(c=>{
+        const clean={...c};
+        delete clean._generatedFrom;
+        delete clean._inverseRestriction;
+        return clean;
+      })
+    }));
+  }
 
   function projectSave(bump){
     if(!PROJECT){showChooser();return;}
     var w=curWs();var slug=(w&&w.name)||"workspace";var terms=(w&&w.terms)||projectData().terms||[];var groups=(w&&w.groups)||[];
     toast("Saving "+slug+"…");
-    _papi("/api/project/save",{workspace:slug,terms:terms,bump:bump,cited:citedFrom(terms),groups:groups,folder:(curWs()&&curWs().folder)||undefined}).then(r=>{toast("Saved "+r.workspace);if(r.status){PROJ_WS={};(r.status.workspaces||[]).forEach(x=>PROJ_WS[x.slug]=x.versions||[]);}var _cw=curWs();if(_cw)_cw.dirty=false;wsMarkDirty(false);if(typeof renderWsSelect==="function")renderWsSelect();refreshVersionSel();}).catch(e=>toast("Save failed: "+e.message));
+    const cleanTerms=_cleanTermsForSave(terms);
+    _papi("/api/project/save",{workspace:slug,terms:cleanTerms,bump:bump,cited:citedFrom(cleanTerms),groups:groups,folder:(curWs()&&curWs().folder)||undefined}).then(r=>{toast("Saved "+r.workspace);if(r.status){PROJ_WS={};(r.status.workspaces||[]).forEach(x=>PROJ_WS[x.slug]=x.versions||[]);}var _cw=curWs();if(_cw)_cw.dirty=false;wsMarkDirty(false);if(typeof renderWsSelect==="function")renderWsSelect();refreshVersionSel();}).catch(e=>toast("Save failed: "+e.message));
   }
   // Validation before an export: bad URIs BLOCK the export and link back to the row.
   var _exportBlocked=false,_lastIssueFn=null;
@@ -3916,7 +4165,7 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
       }).catch(function(e){if(out)out.textContent="Export failed: "+e.message;toast("Export failed: "+e.message);});
     }
     // Save ONLY the live content of the selected workspace, then export ONLY that workspace.
-    Promise.resolve(_nsCommit).then(function(){return _papi("/api/project/save",{workspace:slug,terms:w.terms||[],cited:citedFrom(w.terms||[]),groups:w.groups||[],folder:w.folder||undefined});})
+    Promise.resolve(_nsCommit).then(function(){const cleanTerms=_cleanTermsForSave(w.terms||[]);return _papi("/api/project/save",{workspace:slug,terms:cleanTerms,cited:citedFrom(cleanTerms),groups:w.groups||[],folder:w.folder||undefined});})
       .then(doExport).catch(function(e){toast("Save failed: "+e.message);});
   }
   // Consistency scan (lint). It finds orphans, placeholders, stubs, broken references, duplicates

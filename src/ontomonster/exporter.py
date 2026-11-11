@@ -310,6 +310,7 @@ def build_schema(project: dict, pm: dict) -> dict:
                 "om:valueSet",
                 "om:enumValue",
                 "om:valueSetRef",
+                "om:inverseOf",
             ):
                 continue
             if (
@@ -419,6 +420,25 @@ def build_schema(project: dict, pm: dict) -> dict:
         classes[cname] = cdef
 
     classes.update(stubs)
+
+    # Add inverse field to slots for property terms with om:inverseOf
+    for t in terms:
+        if not _is_prop_term(t):
+            continue
+        # This is a property term - check for om:inverseOf
+        prop_name = _safe(_local(t["name"]))
+        for c in t.get("children", []):
+            if (
+                c.get("pred") == "om:inverseOf"
+                and (c.get("val") or "").strip()
+            ):
+                inv_val = (c.get("val") or "").strip()
+                inv_slot_name = _safe(_local(inv_val))
+                # Add inverse field to this slot
+                if prop_name in slots:
+                    slots[prop_name]["inverse"] = inv_slot_name
+                break
+
     used = {p for p in (list(pm))}
     schema = {
         "id": base.rstrip("/#"),
@@ -519,7 +539,8 @@ def validate_schema(schema_path: Path):
 def domain_ttl(project: dict, pm: dict, out_path: Path):
     """Write the direct OWL/TTL of the terms (TBox).
 
-    It has owl:imports of the references.
+    It has owl:imports of the references. Also handles inverse properties
+    and inverse relationship assertions when writeInverse is enabled.
     """
     g = Graph()
     for p, n in obo_binding_map(pm).items():
@@ -536,8 +557,39 @@ def domain_ttl(project: dict, pm: dict, out_path: Path):
             return EX[_local(curie)]
         return URIRef(dedouble(pm.get(p, "urn:x:" + p + ":"), _local(curie)))
 
+    def get_inverse_iri(pred_curie, props):
+        """Get the first inverse IRI for a predicate from loaded props."""
+        for prop in props:
+            prop_pfx = prop.get("pfx")
+            prop_c = prop.get("c")
+            pred_pfx = _pfx(pred_curie) or prefix
+            pred_local = _local(pred_curie)
+            if prop_pfx == pred_pfx and prop_c == pred_local:
+                inv_list = prop.get("inv", [])
+                if inv_list:
+                    return inv_list[0]
+        return None
+
+    def is_property_term(term):
+        """Check if term is an ObjectProperty, DatatypeProperty or
+        AnnotationProperty.
+        """
+        for ch in term.get("children", []):
+            if ch.get("pred") == "rdf:type":
+                val = (ch.get("val") or "").strip()
+                if val.split(":")[-1] in (
+                    "ObjectProperty",
+                    "DatatypeProperty",
+                    "AnnotationProperty",
+                ):
+                    return True
+        return False
+
     onto = URIRef(base.rstrip("/#"))
     g.add((onto, RDF.type, OWL.Ontology))
+
+    # Load reference ontologies to get inverse info
+    props = []
     for o in (
         load_ontologies(Path(project.get("_onto_dir", ".")))
         if project.get("_onto_dir")
@@ -545,10 +597,30 @@ def domain_ttl(project: dict, pm: dict, out_path: Path):
     ):
         if o.get("iri"):
             g.add((onto, OWL.imports, URIRef(o["iri"].rstrip("/#"))))
+        props.extend(o.get("props", []))
 
     for t in project.get("terms", []):
         s = EX[_local(t["name"])]
-        g.add((s, RDF.type, OWL.Class))
+
+        # Check if this is a property term
+        is_prop = is_property_term(t)
+
+        # For property terms, write as property, not class
+        if is_prop:
+            # Determine property type from rdf:type
+            prop_type = OWL.ObjectProperty
+            for ch in t.get("children", []):
+                if ch.get("pred") == "rdf:type":
+                    val = (ch.get("val") or "").strip()
+                    if val.endswith("DatatypeProperty"):
+                        prop_type = OWL.DatatypeProperty
+                    elif val.endswith("AnnotationProperty"):
+                        prop_type = OWL.AnnotationProperty
+                    break
+            g.add((s, RDF.type, prop_type))
+        else:
+            g.add((s, RDF.type, OWL.Class))
+
         for c in t.get("children", []):
             p, v = c.get("pred"), (c.get("val") or "").strip()
             if not v:
@@ -557,33 +629,67 @@ def domain_ttl(project: dict, pm: dict, out_path: Path):
                 g.add((s, RDFS.label, Literal(_lit_text(v))))
             elif p == "skos:definition":
                 g.add((s, SKOS.definition, Literal(_lit_text(v))))
+            elif p == "om:inverseOf":
+                # Property term with inverse declaration: write
+                # owl:inverseOf
+                if is_prop:
+                    inv_target = resolve(v)
+                    if inv_target:
+                        g.add((s, OWL.inverseOf, inv_target))
             elif p == "rdf:type":
-                tgt = resolve(v)
-                if tgt:
-                    g.add((s, RDFS.subClassOf, tgt))
-            else:
-                prop = resolve(p)
-                r = BNode()
-                g.add((s, RDFS.subClassOf, r))
-                g.add((r, RDF.type, OWL.Restriction))
-                g.add((r, OWL.onProperty, prop))
-                if _is_lit(v):
-                    dt = c.get("dtype", "xsd:string")
-                    dturi = (
-                        URIRef(STD["xsd"] + _local(dt))
-                        if dt.startswith("xsd:")
-                        else None
-                    )
-                    g.add(
-                        (
-                            r,
-                            OWL.hasValue,
-                            Literal(_lit_text(v), datatype=dturi),
-                        )
-                    )
-                else:
+                # For non-property terms, rdf:type is subClassOf
+                if not is_prop:
                     tgt = resolve(v)
-                    g.add((r, OWL.someValuesFrom, tgt))
+                    if tgt:
+                        g.add((s, RDFS.subClassOf, tgt))
+            else:
+                # Regular relationship
+                prop = resolve(p)
+                write_inverse = c.get("writeInverse", False)
+
+                if write_inverse:
+                    # Get inverse property IRI
+                    inv_iri = get_inverse_iri(p, props)
+                    if inv_iri:
+                        # Determine if this is class-to-class or
+                        # individual-to-individual
+                        # For simplicity: if both subject and object are
+                        # classes (have rdf:type owl:Class), write
+                        # restriction. Otherwise write direct assertion.
+                        tgt = resolve(v)
+                        if tgt:
+                            # Write inverse restriction: target
+                            # subClassOf (inverse_prop some subject)
+                            inv_prop = URIRef(inv_iri)
+                            r = BNode()
+                            g.add((tgt, RDFS.subClassOf, r))
+                            g.add((r, RDF.type, OWL.Restriction))
+                            g.add((r, OWL.onProperty, inv_prop))
+                            g.add((r, OWL.someValuesFrom, s))
+
+                # Write the forward relationship as usual
+                if not is_prop:
+                    r = BNode()
+                    g.add((s, RDFS.subClassOf, r))
+                    g.add((r, RDF.type, OWL.Restriction))
+                    g.add((r, OWL.onProperty, prop))
+                    if _is_lit(v):
+                        dt = c.get("dtype", "xsd:string")
+                        dturi = (
+                            URIRef(STD["xsd"] + _local(dt))
+                            if dt.startswith("xsd:")
+                            else None
+                        )
+                        g.add(
+                            (
+                                r,
+                                OWL.hasValue,
+                                Literal(_lit_text(v), datatype=dturi),
+                            )
+                        )
+                    else:
+                        tgt = resolve(v)
+                        g.add((r, OWL.someValuesFrom, tgt))
     g.serialize(out_path.as_posix(), format="turtle")
     return out_path
 
