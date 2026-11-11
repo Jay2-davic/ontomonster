@@ -23,12 +23,20 @@ import re
 import shutil
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 import yaml
 from rdflib import Graph, Namespace, RDF, RDFS, OWL, BNode, Literal, URIRef
 from rdflib.namespace import SKOS, XSD
 
 logger = logging.getLogger("onto_monster")
+
+# Hide RDFCanonicalizationWarning from pyRdfa. This warning is emitted
+# when serializing RDF/XML and is not actionable for the user.
+warnings.filterwarnings(
+    "ignore", category=DeprecationWarning, module="pyRdfa"
+)
+warnings.filterwarnings("ignore", message=".*RDF 1.1 Canonicalization.*")
 
 # LinkML runs in the same process, with no subprocess. The guard lets
 # the module import even if LinkML is not installed. The export endpoint

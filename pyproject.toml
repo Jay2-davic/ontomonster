@@ -29,6 +29,9 @@ dependencies = [
     "PyYAML>=6.0",
     "linkml>=1.7",
     "pyarrow>=14",
+    "requests>=2.32.0",
+    "urllib3>=2.2.0,<3",
+    "charset-normalizer>=3.0,<4",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,16 @@
+name: ontomonster
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.8
+  - pip
+  - pip:
+    - fastapi>=0.110
+    - uvicorn[standard]>=0.29
+    - rdflib>=7.0
+    - PyYAML>=6.0
+    - linkml>=1.7
+    - pyarrow>=14
+    - requests>=2.32.0
+    - urllib3>=2.2.0,<3
+    - charset-normalizer>=3.0,<4

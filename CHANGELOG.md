@@ -49,6 +49,17 @@ your computer.
   query parameters (?light=1) instead of POST with body.
 - Removed /api/refcache/progress from uvicorn access log to reduce
   noise.
+- Fixed "Delete workspace" to remove exported files. Previously, delete
+  only removed drafts from the pooled save directory, leaving exported
+  files in <org>_workspace/ and org-specific saves untouched, causing
+  the workspace to reappear on next load. Delete now removes workspace
+  from ALL locations (org saves, pooled save, exported files, folders)
+  and moves everything to a trash folder at <org>/save/trash/ for
+  manual recovery. The consolidate bundle rebuilds after delete.
+- Quieted LinkML noise. INFO-level messages about slot identifiers and
+  schema imports are hidden unless ONTO_MONSTER_LOG=debug is set.
+  Errors remain visible. RDFCanonicalizationWarning from pyRdfa is also
+  filtered out.
 
 ### Projects and structure
 

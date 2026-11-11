@@ -4,4 +4,7 @@ rdflib>=7.0
 PyYAML>=6.0
 linkml>=1.7
 pyarrow>=14
+requests>=2.32.0
+urllib3>=2.2.0,<3
+charset-normalizer>=3.0,<4
 # tomllib is in the Python 3.11+ standard library; project.toml is written by hand

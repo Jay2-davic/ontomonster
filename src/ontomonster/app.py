@@ -35,6 +35,19 @@ logging.getLogger("uvicorn.access").addFilter(
     lambda record: "/api/refcache/progress" not in record.getMessage()
 )
 
+# Quiet LinkML noise unless DEBUG is set. LinkML logs many INFO
+# messages about slot identifiers and schema imports that are not
+# actionable for the user. Keep ERRORs visible.
+if log_level != "DEBUG":
+    # Hide "Slot 'X': A class with(out) identifiers" messages.
+    logging.getLogger("linkml_runtime.utils.schemaview").setLevel(
+        logging.ERROR
+    )
+    # Hide "Importing X as Y from source Z" messages.
+    logging.getLogger("linkml_runtime.linkml_model").setLevel(logging.ERROR)
+    # Hide "schema namespace is already mapped" messages.
+    logging.getLogger("linkml.generators").setLevel(logging.ERROR)
+
 from .ontology_loader import load_ontologies
 from . import refcache
 from .project_io import import_project_from_text, project_to_turtle
@@ -1605,17 +1618,191 @@ async def project_rename_workspace(req: Request):
     return JSONResponse({"ok": True, "slug": new, **result})
 
 
+def _comprehensive_delete_workspace(pr: "Project", org: str, slug: str):
+    """Delete workspace from ALL locations, move to trash.
+
+    Returns dict with:
+    - trash_dir: Path where files were moved
+    - manifest: List of what was moved (for confirmation)
+    - errors: List of errors encountered (if any)
+    """
+    import shutil
+    import datetime as dt
+
+    errors = []
+    manifest = []
+    trash_dir = None
+
+    # Find org-specific save directory.
+    org_save = None
+    if org:
+        org_save = pr.root / org / "save"
+        if not org_save.exists():
+            org_save = None
+
+    # Create trash folder with timestamp.
+    if org_save:
+        trash_root = org_save / "trash"
+        trash_root.mkdir(exist_ok=True)
+        ts = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        trash_dir = trash_root / f"{ts}_{slug}"
+        trash_dir.mkdir(parents=True)
+    else:
+        # No org selected, use pooled save trash.
+        trash_root = pr.save_dir / "trash"
+        trash_root.mkdir(exist_ok=True)
+        ts = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        trash_dir = trash_root / f"{ts}_{slug}"
+        trash_dir.mkdir(parents=True)
+
+    # 1. Collect save entries and move to JSON in trash.
+    save_data = {"working": None, "history": []}
+
+    # Check org-specific save.
+    if org_save and org_save.is_dir():
+        try:
+            w = pqs.load_working(org_save, slug)
+            if w:
+                save_data["working"] = w
+                manifest.append(f"{org}/save/working.parquet row")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"Load working from {org}/save: {e}")
+
+        try:
+            hist = pqs.list_workspaces(org_save)
+            if slug in hist:
+                # Load versions for manifest.
+                save_data["history"] = [slug]
+                manifest.append(f"{org}/save/history.parquet rows")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"Load history from {org}/save: {e}")
+
+    # Check pooled save.
+    try:
+        w = pqs.load_working(pr.save_dir, slug)
+        if w:
+            if save_data["working"] is None:
+                save_data["working"] = w
+            manifest.append(f"pooled save/working.parquet row")
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"Load working from pooled: {e}")
+
+    try:
+        hist = pqs.list_workspaces(pr.save_dir)
+        if slug in hist:
+            save_data["history"].append("pooled")
+            manifest.append(f"pooled save/history.parquet rows")
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"Load history from pooled: {e}")
+
+    # Write save data to trash.
+    if save_data["working"] or save_data["history"]:
+        try:
+            save_json = trash_dir / "save_data.json"
+            save_json.write_text(
+                json.dumps(save_data, indent=2), encoding="utf-8"
+            )
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"Write save_data.json: {e}")
+
+    # 2. Find and move exported files (exact stem match).
+    export_exts = [".ttl", ".rdf", ".jsonld", ".yaml", ".shacl.ttl"]
+    export_files = []
+
+    if org:
+        # Check <org>_workspace/ directory.
+        ws_dir = pr.root / f"{org}_workspace"
+        if ws_dir.is_dir():
+            for ext in export_exts:
+                f = ws_dir / f"{slug}{ext}"
+                if f.is_file():
+                    export_files.append(f)
+
+        # Check <org>/ directory (direct files).
+        org_dir = pr.root / org
+        if org_dir.is_dir():
+            for ext in export_exts:
+                f = org_dir / f"{slug}{ext}"
+                if f.is_file():
+                    export_files.append(f)
+
+    # Move export files to trash.
+    for f in export_files:
+        try:
+            dest = trash_dir / f.name
+            shutil.move(str(f), str(dest))
+            manifest.append(f"Exported file: {f.relative_to(pr.root)}")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"Move {f.name}: {e}")
+
+    # 3. Find and move workspace folder if it exists.
+    ws_folder = _find_ws_dir(pr, org, slug) if org else None
+    if ws_folder and ws_folder.is_dir():
+        try:
+            # Move entire folder to trash.
+            dest = trash_dir / ws_folder.name
+            shutil.move(str(ws_folder), str(dest))
+            manifest.append(f"Folder: {ws_folder.relative_to(pr.root)}")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"Move folder {ws_folder.name}: {e}")
+
+    # 4. Write manifest to trash.
+    try:
+        manifest_json = trash_dir / "manifest.json"
+        manifest_json.write_text(
+            json.dumps(
+                {
+                    "slug": slug,
+                    "org": org or "(pooled)",
+                    "timestamp": ts,
+                    "moved": manifest,
+                    "errors": errors,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"Write manifest.json: {e}")
+
+    # 5. Delete from parquet files (org-specific and pooled).
+    if org_save and org_save.is_dir():
+        try:
+            result = pqs.delete_workspace(org_save, slug)
+            if result:
+                logger.debug(
+                    "Deleted from %s/save: %s", org, result
+                )
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"Delete from {org}/save parquet: {e}")
+
+    # Also delete from pooled save.
+    try:
+        result = pqs.delete_workspace(pr.save_dir, slug)
+        if result:
+            logger.debug("Deleted from pooled save: %s", result)
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"Delete from pooled parquet: {e}")
+
+    return {
+        "trash_dir": str(trash_dir.relative_to(pr.root)),
+        "manifest": manifest,
+        "errors": errors,
+    }
+
+
 @app.post("/api/project/delete-workspace")
 async def project_delete_workspace(req: Request):
     """Delete a workspace for good.
 
-    The function deletes the Parquet versions and the working copy, the
-    exported module folder (<project>/<slug>/) and the contribution to
-    universal/ (it rebuilds the folder without the workspace). This is
-    destructive and cannot be reversed. The client must have asked for
-    confirmation two times.
+    The function removes the workspace from ALL locations: org-specific
+    save directories, pooled save, exported files in <org>_workspace/,
+    and workspace folders. All removed items are moved to a trash folder
+    at <org>/save/trash/<timestamp>_<slug>/ and can be manually restored.
+    The consolidate bundle is rebuilt. This is destructive. The client
+    must have asked for confirmation two times.
     """
-    import shutil
+    import threading
 
     pr = _current()
     if not pr:
@@ -1626,44 +1813,68 @@ async def project_delete_workspace(req: Request):
         return JSONResponse(
             {"error": "No workspace name given."}, status_code=400
         )
-    known = set(pqs.list_workspaces(pr.save_dir)) | set(
-        pqs.list_working(pr.save_dir)
-    )
+
+    org = STATE.get("org")
+
+    # Check if workspace exists in any location.
+    org_save = None
+    if org:
+        org_save = pr.root / org / "save"
+
+    known = set()
+    if org_save and org_save.is_dir():
+        known |= set(pqs.list_workspaces(org_save))
+        known |= set(pqs.list_working(org_save))
+    known |= set(pqs.list_workspaces(pr.save_dir))
+    known |= set(pqs.list_working(pr.save_dir))
+
     if slug not in known:
         return JSONResponse(
             {"error": f"No workspace '{slug}' to delete."}, status_code=404
         )
-    removed = {
-        "parquet": None,
-        "folder": False,
-        "universal": None,
-        "universal_error": None,
-    }
-    # 1) Parquet: history versions and working copy.
-    removed["parquet"] = pqs.delete_workspace(pr.save_dir, slug)
-    # 2) The exported module folder <project>/<slug>/.
-    folder = pr.root / slug
-    try:
-        if folder.is_dir() and pr.root in folder.parents:
-            shutil.rmtree(folder)
-            removed["folder"] = True
-    except Exception as fe:  # noqa: BLE001
-        removed["folder_error"] = str(fe)
-    # 3) Refresh universal/, so that the terms of the deleted workspace
-    # go out (best effort).
-    try:
-        from .assemble import write_universal
 
-        uni = _consolidate(pr)
-        removed["universal"] = uni
-        if uni and uni.get("excluded"):
-            removed["universal_error"] = (
-                "universal/ rebuilt; %d term(s) from other workspaces "
-                "still excluded as invalid IRIs." % len(uni["excluded"])
-            )
-    except Exception as ue:  # noqa: BLE001
-        removed["universal_error"] = str(ue)
-    return JSONResponse({"deleted": slug, **removed, "status": _status()})
+    # Comprehensive delete with trash folder.
+    try:
+        result = _comprehensive_delete_workspace(pr, org, slug)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Delete workspace failed")
+        return JSONResponse(
+            {"error": f"Delete failed: {e}"}, status_code=500
+        )
+
+    # Verify workspace is gone.
+    verify_known = set()
+    if org_save and org_save.is_dir():
+        verify_known |= set(pqs.list_workspaces(org_save))
+        verify_known |= set(pqs.list_working(org_save))
+    verify_known |= set(pqs.list_workspaces(pr.save_dir))
+    verify_known |= set(pqs.list_working(pr.save_dir))
+
+    if slug in verify_known:
+        result["errors"].append(
+            f"Workspace '{slug}' still found after delete!"
+        )
+
+    # Rebuild consolidate in background.
+    def rebuild_consolidate():
+        try:
+            _consolidate(pr)
+            logger.debug("Consolidate rebuilt after delete: %s", slug)
+        except Exception as e:  # noqa: BLE001
+            logger.error("Consolidate rebuild failed: %s", e)
+
+    t = threading.Thread(target=rebuild_consolidate, daemon=True)
+    t.start()
+
+    return JSONResponse(
+        {
+            "deleted": slug,
+            "trash": result["trash_dir"],
+            "moved": result["manifest"],
+            "errors": result.get("errors", []),
+            "status": _status(),
+        }
+    )
 
 
 def project_file(path: str):
