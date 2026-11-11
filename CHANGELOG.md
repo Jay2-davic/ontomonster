@@ -31,6 +31,19 @@ your computer.
 - Progressive polling. UI polls at 500ms, increases to 1000ms after
   5 seconds.
 
+**Value Autocomplete Deduplication**
+- Fixed duplicate entries in value autofill. Duplicates occurred when
+  the same IRI was declared in multiple ontologies (e.g., UO_0000021
+  in both uo.owl and chmo.owl) and when different IRIs represented the
+  same concept (e.g., gram in UO, QUDT, and OM).
+- IRI-based deduplication: Each IRI appears once. Winner selected by:
+  ontology prefix matching IRI token, then copy with definition, then
+  alphabetically first.
+- Label-based grouping: Same-meaning terms grouped with "+N namespaces"
+  chip. Click to expand alternates and select specific namespace.
+- Winner for label group: alphabetically first (preferred list support
+  planned for value_scopes.yaml).
+
 **Bug Fixes**
 - Fixed 405 error on /api/project/status. Route now accepts GET with
   query parameters (?light=1) instead of POST with body.

@@ -287,6 +287,11 @@
   .acpop .acrow .acl{font-size:13px;color:var(--ink,#1d1d1f)}
   .acpop .acrow .acc{font-size:11px;color:var(--muted,#8a8a8e);font-family:var(--mono,ui-monospace,monospace)}
   .acpop .acrow.sel,.acpop .acrow:hover{background:var(--p-mine-bg,rgba(20,120,170,.13))}
+  .acpop .acrow .acalt{font-size:10px;color:var(--link,#0066cc);background:rgba(0,102,204,.08);padding:2px 6px;border-radius:4px;margin-left:6px;cursor:pointer;display:inline-block;border:1px solid rgba(0,102,204,.15)}
+  .acpop .acrow .acalt:hover{background:rgba(0,102,204,.15)}
+  .acpop .acaltlist{padding:6px 12px;background:var(--subtle,#f5f5f7);border-radius:6px;margin:2px 0;font-size:11px}
+  .acpop .acaltlist div{padding:3px 0;cursor:pointer;color:var(--ink,#1d1d1f)}
+  .acpop .acaltlist div:hover{color:var(--link,#0066cc)}
   .acpop .acempty{padding:9px 11px;color:var(--muted,#8a8a8e);font-size:12px}
 
   .grouphdr{display:flex;align-items:center;gap:7px;padding:6px 9px;margin:7px 2px 2px;border-radius:8px;cursor:pointer;font-size:13.5px;color:var(--muted,#8a8a8e);background:var(--chip,rgba(0,0,0,.04));user-select:none}
@@ -1082,6 +1087,39 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
       };
     }));
   };
+  // STEP 2: Group by normalized label (same meaning, different IRIs)
+  function acGroupByLabel(items){
+    const norm=s=>(s||"").toLowerCase().trim().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/\s+/g," ");
+    const byLabel={};
+    items.forEach(it=>{
+      const key=norm(it.label);
+      if(key){
+        if(!byLabel[key])byLabel[key]=[];
+        byLabel[key].push(it);
+      }
+    });
+    const res=[];
+    Object.keys(byLabel).forEach(label=>{
+      const group=byLabel[label];
+      if(group.length===1){
+        res.push(group[0]);
+        return;
+      }
+      // Winner selection (no hard-coded lists yet, will add preferred list):
+      // 1. TODO: Check preferred list from value_scopes.yaml
+      // 2. BFO aligned ontologies (check bfo status in catalog.json)
+      // 3. First alphabetically
+      let winner=group[0];
+      // For now: alphabetically until we load preferred list
+      group.sort((a,b)=>(a.pfx||"").localeCompare(b.pfx||""));
+      winner=group[0];
+      // Mark as grouped with alternates
+      winner._alts=group.slice(1);
+      winner._altCount=group.length-1;
+      res.push(winner);
+    });
+    return res;
+  }
   // STEP 1: Deduplicate candidates by full IRI
   function acDedupByIRI(items){
     const byIRI={};
@@ -1160,15 +1198,56 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
   function acTok(t,str,fz){const idx=str.indexOf(t);if(idx===0)return 100;if(idx>0){const b=str[idx-1];const wb=(b===" "||b==="-"||b==="_");return (wb?70:48)-Math.min(idx,24)*0.4;}if(!fz)return -1;let i=0;for(let k=0;k<str.length&&i<t.length;k++){if(str[k]===t[i])i++;}return i===t.length?18:-1;}
   function acScore(q,lc,cc,fz,ac){if(!q)return 1;const toks=q.split(/\s+/).filter(Boolean);let tot=0;for(const t of toks){let s=Math.max(acTok(t,lc,fz),acTok(t,cc,fz)*0.6);if(ac)s=Math.max(s,acTok(t,ac,fz)*0.85);if(s<=0)return -1;tot+=s;}return tot-lc.length*0.01;}
   function acEnsure(){if(acEl)return;acEl=document.createElement("div");acEl.className="acpop";document.body.appendChild(acEl);
-    acEl.addEventListener("mousedown",e=>{const row=e.target.closest("[data-i]");if(row){e.preventDefault();acChoose(+row.dataset.i);}});
+    acEl.addEventListener("mousedown",e=>{
+      if(e.target.classList.contains("acalt")){
+        e.preventDefault();e.stopPropagation();
+        const i=+e.target.dataset.i;
+        acShowAlts(i);
+        return;
+      }
+      const row=e.target.closest("[data-i]");
+      if(row){e.preventDefault();acChoose(+row.dataset.i);}
+    });
     document.addEventListener("mousedown",e=>{if(acTarget&&acEl&&!acEl.contains(e.target)&&e.target!==acTarget)acClose();},true);
     window.addEventListener("resize",()=>acClose());window.addEventListener("scroll",e=>{if(!acEl||!acEl.classList.contains("show"))return;var tg=e.target;if(tg&&(tg===acEl||(tg.nodeType===1&&acEl.contains(tg))))return;acPlace();},true);}
   function acPlace(){if(!acTarget||!acEl)return;const r=acTarget.getBoundingClientRect();acEl.style.left=r.left+"px";acEl.style.minWidth=Math.max(210,r.width)+"px";const below=window.innerHeight-r.bottom;if(below<300&&r.top>below){acEl.style.top="auto";acEl.style.bottom=(window.innerHeight-r.top+4)+"px";}else{acEl.style.bottom="auto";acEl.style.top=(r.bottom+4)+"px";}}
-  function acRender(){acEnsure();if(!acItems.length){acEl.innerHTML='<div class="acempty">no matches \u2014 keep typing</div>';acEl.classList.add("show");acPlace();return;}let s="";acItems.forEach((it,i)=>{const lab=esc(it.label||it.code);const code=(it.code&&it.code!==it.label)?'<span class="acc">'+esc(it.code)+'</span>':"";s+='<div class="acrow'+(i===acIdx?' sel':'')+'" data-i="'+i+'"><span class="acl">'+lab+'</span>'+code+'</div>';});acEl.innerHTML=s;acEl.classList.add("show");acPlace();}
+  function acShowAlts(i){
+    const it=acItems[i];
+    if(!it||!it._alts||!it._alts.length)return;
+    let s='<div class="acaltlist"><div style="font-weight:500;padding-bottom:4px">Other namespaces:</div>';
+    it._alts.forEach(alt=>{
+      let u="";
+      if(alt.pfx&&ONTOS[alt.pfx]&&ONTOS[alt.pfx].classes&&ONTOS[alt.pfx].classes[alt.code]){
+        u=ONTOS[alt.pfx].classes[alt.code].u||"";
+      }
+      s+='<div onclick="acChooseAlt('+i+',\''+esc(alt.pfx)+'\',\''+esc(alt.code)+'\')">'+esc(alt.pfx)+':'+esc(alt.code)+' <span style="color:var(--muted);font-size:10px">'+esc(u)+'</span></div>';
+    });
+    s+='</div>';
+    const row=acEl.querySelector('[data-i="'+i+'"]');
+    if(row){
+      const existing=row.nextElementSibling;
+      if(existing&&existing.classList.contains("acaltlist")){
+        existing.remove();
+      }else{
+        row.insertAdjacentHTML("afterend",s);
+      }
+    }
+  }
+  window.acChooseAlt=function(i,pfx,code){
+    const inp=acTarget;
+    const c=find(acKind==="rel"?inp.dataset.rel:inp.dataset.val);
+    if(c){
+      const px=pfx;
+      c.val=px?(px+":"+code):(userPrefix?(userPrefix+":"+code):code);
+      try{inp.value=dispText(c.val);}catch(e){}
+    }
+    acChoosing=true;acClose();render();setTimeout(function(){acChoosing=false;},0);
+  };
+  function acRender(){acEnsure();if(!acItems.length){acEl.innerHTML='<div class="acempty">no matches \u2014 keep typing</div>';acEl.classList.add("show");acPlace();return;}let s="";acItems.forEach((it,i)=>{const lab=esc(it.label||it.code);const code=(it.code&&it.code!==it.label)?'<span class="acc">'+esc(it.code)+'</span>':"";const altChip=it._altCount?'<span class="acalt" data-i="'+i+'">+'+it._altCount+' namespace'+(it._altCount>1?'s':'')+'</span>':"";s+='<div class="acrow'+(i===acIdx?' sel':'')+'" data-i="'+i+'"><span class="acl">'+lab+'</span>'+code+altChip+'</div>';});acEl.innerHTML=s;acEl.classList.add("show");acPlace();}
   let acSrvTok=0,acSrvTimer=null;
   function acServer(){if(!acTarget)return;const pfx=acPrefix,kind=acKind,q=(acTarget.value||"").trim();if(!ONTOS[pfx]||!ONTOS[pfx].searchable)return;const tok=++acSrvTok;
     _papi("/api/refsearch?prefix="+encodeURIComponent(pfx)+"&kind="+(kind==="rel"?"prop":"class")+"&q="+encodeURIComponent(q)+"&limit=50").then(d=>{if(tok!==acSrvTok||!acTarget||acPrefix!==pfx)return;const add=(d.results||[]).map(x=>({code:x.code,label:x.label||x.code,lc:(x.label||"").toLowerCase(),cc:(x.code||"").toLowerCase(),pfx:pfx}));const merged=acDedupByIRI(add.concat(acItems));acItems=merged.slice(0,60);if(acIdx<0&&acItems.length)acIdx=0;acRender();}).catch(()=>{});}
-  function acFilter(q){if(!acTarget)return;q=(q||"").trim().toLowerCase();if(acKind==="val"&&q[0]==='"'){acClose();return;}let items;if(!q){const sorted=acAll.slice().sort((a,b)=>a.lc.length-b.lc.length);items=acDedupByIRI(sorted).slice(0,60);}else{const fz=acAll.length<=20000;const sc=[];for(let k=0;k<acAll.length;k++){const it=acAll[k];const v=acScore(q,it.lc,it.cc,fz,it.ac);if(v>0){it._s=v;sc.push(it);}if(sc.length>6000)break;}sc.sort((a,b)=>b._s-a._s);items=acDedupByIRI(sc).slice(0,60);}acItems=items;acIdx=items.length?0:-1;if(acTarget&&ONTOS[acPrefix]&&ONTOS[acPrefix].searchable){clearTimeout(acSrvTimer);acSrvTimer=setTimeout(acServer,140);}acRender();}
+  function acFilter(q){if(!acTarget)return;q=(q||"").trim().toLowerCase();if(acKind==="val"&&q[0]==='"'){acClose();return;}let items;if(!q){const sorted=acAll.slice().sort((a,b)=>a.lc.length-b.lc.length);const deduped=acDedupByIRI(sorted);items=acGroupByLabel(deduped).slice(0,60);}else{const fz=acAll.length<=20000;const sc=[];for(let k=0;k<acAll.length;k++){const it=acAll[k];const v=acScore(q,it.lc,it.cc,fz,it.ac);if(v>0){it._s=v;sc.push(it);}if(sc.length>6000)break;}sc.sort((a,b)=>b._s-a._s);const deduped=acDedupByIRI(sc);items=acGroupByLabel(deduped).slice(0,60);}acItems=items;acIdx=items.length?0:-1;if(acTarget&&ONTOS[acPrefix]&&ONTOS[acPrefix].searchable){clearTimeout(acSrvTimer);acSrvTimer=setTimeout(acServer,140);}acRender();}
   // ==========================================================================
   // Autocomplete: the pickers for relations and values.
   // ==========================================================================
