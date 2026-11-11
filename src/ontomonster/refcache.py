@@ -245,11 +245,16 @@ def _read_terms(refdir: Path, slug: str) -> dict:
     return by
 
 
-def _parse_file_wrapper(path_str):
-    """Parse a file and return its record. Worker for parallel parsing."""
+def _parse_file_wrapper(args):
+    """Parse a file and return its record. Worker for parallel parsing.
+
+    The argument args is a tuple (path_str, declared_prefix). The
+    declared_prefix is the prefix from sources.yaml, or None.
+    """
     try:
+        path_str, declared_prefix = args
         p = Path(path_str)
-        recs = _parse_file(p)
+        recs = _parse_file(p, declared_prefix=declared_prefix)
         rec = (
             recs[0]
             if recs
@@ -257,11 +262,14 @@ def _parse_file_wrapper(path_str):
         )
         return path_str, rec, None
     except Exception as e:  # noqa: BLE001
+        path_str, _ = args
         return path_str, {"file": Path(path_str).name}, str(e)
 
 
 # Build.
-def build(refdir: Path, sources: list, parse: bool = True) -> list:
+def build(
+    refdir: Path, sources: list, parse: bool = True, sources_yaml_data=None
+) -> list:
     """Make the catalog current for sources. Return one record for each
     file.
 
@@ -270,6 +278,10 @@ def build(refdir: Path, sources: list, parse: bool = True) -> list:
     version. The code flags duplicate content. If parse is False, the
     function only reads the catalog. It skips new and changed files,
     because the asynchronous builder parses them and shows the progress.
+
+    The argument sources_yaml_data is the parsed sources.yaml content
+    (or None). The code reads the declared prefix of each file and uses
+    it as the ontology key. The fallback is the file-name prefix.
     """
     t_start = time.time()
     refdir.mkdir(parents=True, exist_ok=True)
@@ -280,6 +292,28 @@ def build(refdir: Path, sources: list, parse: bool = True) -> list:
         _set(
             phase="load", file="", done=0, total=total, note="reading catalog"
         )
+
+    # Build a map from file name to declared prefix. The sources.yaml
+    # file declares the prefix and namespace of each reference. The code
+    # uses it as the ontology key, overriding the file-name rule. When
+    # two files declare the same prefix, keep the first. Track collisions
+    # and report once.
+    filename_to_prefix = {}
+    prefix_collisions = {}
+    if sources_yaml_data:
+        for o in sources_yaml_data.get("ontologies") or []:
+            fn = o.get("filename")
+            pfx = o.get("prefix")
+            if fn and pfx:
+                if pfx in prefix_collisions:
+                    prefix_collisions[pfx].append(fn)
+                elif pfx in filename_to_prefix.values():
+                    prev = [
+                        k for k, v in filename_to_prefix.items() if v == pfx
+                    ][0]
+                    prefix_collisions[pfx] = [prev, fn]
+                else:
+                    filename_to_prefix[fn] = pfx
 
     # 1) Hash each file. Decide if the file is new, unchanged or
     # changed. Detect duplicates.
@@ -370,15 +404,18 @@ def build(refdir: Path, sources: list, parse: bool = True) -> list:
             for x in todo_sorted:
                 s, p, sha, slug, state, version, dup_of, have_side, size, mtime = x
                 if not dup_of and (state != "unchanged" or not have_side):
-                    parse_jobs.append((str(p), p, sha, slug, s, version, size, mtime))
+                    declared_pfx = filename_to_prefix.get(p.name)
+                    parse_jobs.append(
+                        (str(p), p, sha, slug, s, version, size, mtime, declared_pfx)
+                    )
 
             # Parse in parallel
             parsed_results = {}
             if parse_jobs:
-                paths_to_parse = [job[0] for job in parse_jobs]
+                paths_with_prefix = [(job[0], job[8]) for job in parse_jobs]
                 with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
                     for i, (path_str, rec, err) in enumerate(
-                        executor.map(_parse_file_wrapper, paths_to_parse)
+                        executor.map(_parse_file_wrapper, paths_with_prefix)
                     ):
                         parsed_n += 1
                         p = Path(path_str)
@@ -553,7 +590,7 @@ def build(refdir: Path, sources: list, parse: bool = True) -> list:
     return out
 
 
-def build_async(refdir: Path, sources: list):
+def build_async(refdir: Path, sources: list, sources_yaml_data=None):
     """Run build on a background thread.
 
     The UI can then poll the progress.
@@ -564,7 +601,7 @@ def build_async(refdir: Path, sources: list):
 
     def run():
         try:
-            _RESULT["records"] = build(refdir, sources)
+            _RESULT["records"] = build(refdir, sources, True, sources_yaml_data)
         except Exception as e:  # noqa: BLE001
             _set(phase="error", note=str(e))
 

@@ -733,11 +733,13 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
   // Reference ontologies: the registry and the resolution of classes and properties.
   // ==========================================================================
   const ONTOS={};let REFFILES={};let REFERR=[]; const PREFIX_IRI={};
+  let _IRI_INDEX=null;
   function addOnto(prefix,iri,classes,props){const o={iri:iri,classes:{},clsIdx:{},codeIdx:{},props:(props||[]).slice(),propByCode:{},propIdx:{}};
     function altArr(a){return Array.isArray(a)?a:(a?String(a).split("|"):[]);}
     (classes||[]).forEach(c=>{o.classes[c.c]=c;o.codeIdx[(c.c||"").toLowerCase()]=c.c;o.clsIdx[(c.l||c.c||"").toLowerCase()]=c.c;altArr(c.a).forEach(a=>{a=(a||"").trim();if(a&&!o.clsIdx[a.toLowerCase()])o.clsIdx[a.toLowerCase()]=c.c;});});
-    (props||[]).forEach(p=>{o.propByCode[p.c]=p;o.propIdx[(p.l||p.c||"").toLowerCase()]=p.c;});ONTOS[prefix]=o;if(typeof _invalidateSub==="function")_invalidateSub();}
-  
+    (props||[]).forEach(p=>{o.propByCode[p.c]=p;o.propIdx[(p.l||p.c||"").toLowerCase()]=p.c;});ONTOS[prefix]=o;_IRI_INDEX=null;if(typeof _invalidateSub==="function")_invalidateSub();}
+  function _buildIRIIndex(){if(_IRI_INDEX)return _IRI_INDEX;const idx={};for(const pfx in ONTOS){const o=ONTOS[pfx];for(const code in o.classes){const c=o.classes[code];if(c.u)idx[c.u]={pfx:pfx,code:code,kind:"class"};}for(const p of o.props){if(p.u)idx[p.u]={pfx:p.pfx||pfx,code:p.c,kind:"prop"};}}return _IRI_INDEX=idx;}
+  function _resolveByIRI(iri){const idx=_buildIRIIndex();return idx[iri]||null;}
 
   function isOnto(p){return !!ONTOS[p];}
   // Give each loaded ontology prefix a stable color that is safe for color-blind users. The code
@@ -745,11 +747,11 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
   const _ontoOrder=[];
   function ontoColorIdx(pfx){let i=_ontoOrder.indexOf(pfx);if(i<0){i=_ontoOrder.length;_ontoOrder.push(pfx);}return i%8;}
   function ontoColor(pfx){const i=ontoColorIdx(pfx);const v=getComputedStyle(document.documentElement).getPropertyValue("--cb"+i).trim();return v||"#888";}
-  function clsLabel(p,c){const o=ONTOS[p];return o&&o.classes[c]?o.classes[c].l:c;}
-  function clsDef(p,c){const o=ONTOS[p];return o&&o.classes[c]&&o.classes[c].d?o.classes[c].d:"";}
-  function isClass(p,c){const o=ONTOS[p];return !!(o&&o.classes[c]);}
-  function propLabel(p,c){const o=ONTOS[p];return o&&o.propByCode[c]?o.propByCode[c].l:(o&&o.classes&&o.classes[c]?o.classes[c].l:c);}
-  function propDef(p,c){const o=ONTOS[p];if(o&&o.propByCode[c]&&o.propByCode[c].d)return o.propByCode[c].d;if(o&&o.classes&&o.classes[c]&&o.classes[c].d)return o.classes[c].d;return "";}
+  function clsLabel(p,c){const o=ONTOS[p];if(o&&o.classes[c])return o.classes[c].l;const iri=_computeIRI(p,c);if(iri){const rec=_resolveByIRI(iri);if(rec&&rec.kind==="class"){const ro=ONTOS[rec.pfx];if(ro&&ro.classes[rec.code])return ro.classes[rec.code].l;}}return c;}
+  function clsDef(p,c){const o=ONTOS[p];if(o&&o.classes[c]&&o.classes[c].d)return o.classes[c].d;const iri=_computeIRI(p,c);if(iri){const rec=_resolveByIRI(iri);if(rec&&rec.kind==="class"){const ro=ONTOS[rec.pfx];if(ro&&ro.classes[rec.code]&&ro.classes[rec.code].d)return ro.classes[rec.code].d;}}return "";}
+  function isClass(p,c){const o=ONTOS[p];if(o&&o.classes[c])return true;const iri=_computeIRI(p,c);if(iri){const rec=_resolveByIRI(iri);if(rec&&rec.kind==="class")return true;}return false;}
+  function propLabel(p,c){const o=ONTOS[p];if(o&&o.propByCode[c])return o.propByCode[c].l;if(o&&o.classes&&o.classes[c])return o.classes[c].l;const iri=_computeIRI(p,c);if(iri){const rec=_resolveByIRI(iri);if(rec&&rec.kind==="prop"){const ro=ONTOS[rec.pfx];if(ro&&ro.propByCode[rec.code])return ro.propByCode[rec.code].l;}if(rec&&rec.kind==="class"){const ro=ONTOS[rec.pfx];if(ro&&ro.classes[rec.code])return ro.classes[rec.code].l;}}return c;}
+  function propDef(p,c){const o=ONTOS[p];if(o&&o.propByCode[c]&&o.propByCode[c].d)return o.propByCode[c].d;if(o&&o.classes&&o.classes[c]&&o.classes[c].d)return o.classes[c].d;const iri=_computeIRI(p,c);if(iri){const rec=_resolveByIRI(iri);if(rec&&rec.kind==="prop"){const ro=ONTOS[rec.pfx];if(ro&&ro.propByCode[rec.code]&&ro.propByCode[rec.code].d)return ro.propByCode[rec.code].d;}if(rec&&rec.kind==="class"){const ro=ONTOS[rec.pfx];if(ro&&ro.classes[rec.code]&&ro.classes[rec.code].d)return ro.classes[rec.code].d;}}return "";}
   function resolveClassIn(p,t){const o=ONTOS[p];if(!o)return null;t=(t||"").trim();if(o.classes&&o.classes[t])return t;if(o.codeIdx&&o.codeIdx[t.toLowerCase()])return o.codeIdx[t.toLowerCase()];const cands=[t.toLowerCase(),t.toLowerCase().replace(/_/g," ")];for(const k of cands){if(o.clsIdx&&o.clsIdx[k])return o.clsIdx[k];}return null;}
   function resolveAnyClass(t){for(const p of Object.keys(ONTOS)){const c=resolveClassIn(p,t);if(c)return p+":"+c;}return null;}
   function resolveAnyProp(t){const k=(t||"").trim().toLowerCase();for(const p of Object.keys(ONTOS)){const c=ONTOS[p].propIdx[k];if(c)return p+":"+c;}return null;}
@@ -926,15 +928,7 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
   // is a real code, or if a label resolves to one term. Return true for ontologies that are not
   // loaded or not authoritative. Other code judges them. This avoids noise. Scan uses this check to
   // flag invented look-alike URIs such as cco:prescribed_by.
-  function _refReal(sel,local,wantProp){const o=ONTOS[sel];if(!o)return true;
-    var hasC=Object.keys(o.classes||{}).length, hasP=Object.keys(o.propByCode||{}).length;
-    if(!hasC&&!hasP)return true;                        // The ontology is empty or has metadata only. The code cannot judge it.
-    if((o.classes&&o.classes[local])||(o.propByCode&&o.propByCode[local])||(o.codeIdx&&o.codeIdx[(local||"").toLowerCase()]))return true;
-    if(wantProp){                                        // The check is for a RELATION.
-      if(!hasP)return true;                              // No properties are loaded (for example a stub). The code cannot verify, so it does not flag.
-      return !!resolvePropIn(sel,local);
-    }
-    return !!resolveClassIn(sel,local);}
+  function _refReal(sel,local,wantProp){const o=ONTOS[sel];if(o){var hasC=Object.keys(o.classes||{}).length, hasP=Object.keys(o.propByCode||{}).length;if(!hasC&&!hasP)return true;if((o.classes&&o.classes[local])||(o.propByCode&&o.propByCode[local])||(o.codeIdx&&o.codeIdx[(local||"").toLowerCase()]))return true;if(wantProp){if(!hasP)return true;const res=resolvePropIn(sel,local);if(res)return true;}else{const res=resolveClassIn(sel,local);if(res)return true;}}const iri=_computeIRI(sel,local);if(iri){const rec=_resolveByIRI(iri);if(rec){if(wantProp&&rec.kind==="prop")return true;if(!wantProp&&rec.kind==="class")return true;}}return !o;}
   // The structural predicates of OntoMonster itself (not a reference vocabulary). They mark the
   // value type and the enum or value-set metadata of a term. They are always resolved. Scan never
   // flags them.
@@ -955,7 +949,7 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
   function curieIRI(v){const pp=parts(v);if(pp.lit||pp.iri||pp.sel==="")return null;const o=ONTOS[pp.sel];if(!o)return null;let c=o.classes&&o.classes[pp.local];if(!c&&o.clsIdx){const cd=o.clsIdx[(pp.local||"").toLowerCase()];if(cd)c=o.classes[cd];}return c?c.u:null;}
   function subjectTypeIRIs(term){const out=[];if(!term)return out;(term.children||[]).forEach(c=>{if(c.pred!=="rdf:type"&&c.pred!=="rdfs:subClassOf")return;if(typeof isHiddenTypeRow==="function"&&isHiddenTypeRow(c))return;const ir=curieIRI(c.val);if(ir)out.push(ir);});return out;}
   const BFO_TOP="http://purl.obolibrary.org/obo/BFO_0000001";
-  function _propRec(predCurie){const pp=predParts(predCurie);if(!isOnto(pp.sel))return null;const o=ONTOS[pp.sel];return (o&&o.propByCode&&o.propByCode[pp.local])||null;}
+  function _propRec(predCurie){const pp=predParts(predCurie);if(isOnto(pp.sel)){const o=ONTOS[pp.sel];const pr=o&&o.propByCode&&o.propByCode[pp.local];if(pr)return pr;}const iri=_computeIRI(pp.prefix,pp.local);if(iri){const rec=_resolveByIRI(iri);if(rec&&rec.kind==="prop"){const ro=ONTOS[rec.pfx];if(ro&&ro.propByCode&&ro.propByCode[rec.code])return ro.propByCode[rec.code];}}return null;}
   function predBadMatch(term,predCurie){const pr=_propRec(predCurie);if(!pr||!pr.dom||!pr.dom.length)return "";const X=subIndex();const knownDom=pr.dom.filter(d=>X.node[d]);if(!knownDom.length)return "";const dl=knownDom.map(d=>X.node[d].label).join(" or ");const types=subjectTypeIRIs(term).filter(t=>X.node[t]);if(!types.length){const hasType=!!(term&&(term.children||[]).some(c=>(c.pred==="rdf:type"||c.pred==="rdfs:subClassOf")&&(c.val||"").trim()&&!(typeof isHiddenTypeRow==="function"&&isHiddenTypeRow(c))));return hasType?"":("Give this term a type so "+relName(predCurie)+" can be checked \u2014 it expects \u201C"+dl+"\u201D.");}if(types.some(t=>knownDom.some(d=>isA(t,d)||isA(d,t))))return "";const tl=types.map(t=>X.node[t].label).join(", ");return relName(predCurie)+" expects its subject to be \u201C"+dl+"\u201D \u2014 but this term is typed as \u201C"+tl+"\u201D.";}
   function valBadMatch(node){const pp=parts(node.val);if(pp.lit)return "";const pr=_propRec(node.pred);if(!pr||!pr.rng||!pr.rng.length)return "";const X=subIndex();const knownR=pr.rng.filter(r=>X.node[r]);if(!knownR.length)return "";if(knownR.every(r=>r===BFO_TOP))return "";const objIRI=curieIRI(node.val);if(!objIRI||!X.node[objIRI])return "";if(knownR.some(r=>satisfiesIRI(objIRI,r)||isA(r,objIRI)))return "";const anc=ancestorsIRI(objIRI);const hasInfo=(anc.size>1)||!!(X.typ[objIRI]&&X.typ[objIRI].length);if(!hasInfo)return "";const rl=knownR.map(r=>X.node[r].label).join(" or ");return relName(node.pred)+" expects its value to be \u201C"+rl+"\u201D.";}
   // Semantic compatibility for the autofill of relationships.
@@ -1271,9 +1265,10 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
   function buildMine(){renderList();}
   let _softT=null;
   function softRefresh(){clearTimeout(_softT);_softT=setTimeout(function(){_softT=null;renderList();renderMap();updateSummary();if(typeof refreshExportBlock==="function")refreshExportBlock();},170);}
-  function relLabel(pred){if(!pred)return "";const i=pred.indexOf(":");if(i<0)return pred;const p=pred.slice(0,i),c=pred.slice(i+1);if(isOnto(p)){const o=ONTOS[p];if(o&&o.propByCode&&o.propByCode[c])return o.propByCode[c].l;if(o&&o.classes&&o.classes[c])return o.classes[c].l;}return pred;}
+  function relLabel(pred){if(!pred)return "";const i=pred.indexOf(":");if(i<0)return pred;const p=pred.slice(0,i),c=pred.slice(i+1);if(isOnto(p)){const o=ONTOS[p];if(o&&o.propByCode&&o.propByCode[c])return o.propByCode[c].l;if(o&&o.classes&&o.classes[c])return o.classes[c].l;}const iri=_computeIRI(p,c);if(iri){const rec=_resolveByIRI(iri);if(rec&&rec.kind==="prop"){const ro=ONTOS[rec.pfx];if(ro&&ro.propByCode&&ro.propByCode[rec.code])return ro.propByCode[rec.code].l;}if(rec&&rec.kind==="class"){const ro=ONTOS[rec.pfx];if(ro&&ro.classes&&ro.classes[rec.code])return ro.classes[rec.code].l;}}return pred;}
+  function _computeIRI(pfx,code){const ns=ONTOS[pfx]?ONTOS[pfx].iri:STD_PREFIXES[pfx];return ns?(ns+code):null;}
   function predParts(pred){const i=(pred||"").indexOf(":");if(i<0)return {prefix:userPrefix,local:pred||"",sel:""};const p=pred.slice(0,i),l=pred.slice(i+1);return {prefix:p,local:l,sel:(p===userPrefix?"":p)};}
-  function relDisplay(pred){if(!pred)return "";if(PRED_INFO[pred])return PRED_INFO[pred].name;if(STD_BYCODE[pred])return STD_BYCODE[pred];if(REQ_META[pred])return REQ_META[pred].name;const pp=predParts(pred);if(isOnto(pp.sel)){const o=ONTOS[pp.sel];if(o.propByCode&&o.propByCode[pp.local])return o.propByCode[pp.local].l;if(o.classes&&o.classes[pp.local])return o.classes[pp.local].l;}return pp.local;}
+  function relDisplay(pred){if(!pred)return "";if(PRED_INFO[pred])return PRED_INFO[pred].name;if(STD_BYCODE[pred])return STD_BYCODE[pred];if(REQ_META[pred])return REQ_META[pred].name;const pp=predParts(pred);if(isOnto(pp.sel)){const o=ONTOS[pp.sel];if(o.propByCode&&o.propByCode[pp.local])return o.propByCode[pp.local].l;if(o.classes&&o.classes[pp.local])return o.classes[pp.local].l;}const iri=_computeIRI(pp.prefix,pp.local);if(iri){const rec=_resolveByIRI(iri);if(rec&&rec.kind==="prop"){const ro=ONTOS[rec.pfx];if(ro&&ro.propByCode&&ro.propByCode[rec.code])return ro.propByCode[rec.code].l;}if(rec&&rec.kind==="class"){const ro=ONTOS[rec.pfx];if(ro&&ro.classes&&ro.classes[rec.code])return ro.classes[rec.code].l;}}return pp.local;}
   const REL_PLAIN=["rdf","rdfs","skos","dcterms","owl"];
   function relNsList(){const own=userPrefix;const ont=Object.keys(ONTOS).filter(p=>p&&p!==own&&((ONTOS[p].props||[]).length>0)).sort();const rest=new Set();REL_PLAIN.forEach(p=>{if(p&&p!==own&&!ONTOS[p])rest.add(p);});return ont.concat([...rest]);}
   function relPfxOpts(sel){let arr=relNsList();if(sel&&!arr.includes(sel))arr=arr.concat([sel]);let h='<option value=""'+(sel===""?' selected':'')+'>\u2022</option>';arr.forEach(p=>{h+='<option value="'+p+'"'+(p===sel?' selected':'')+'>'+p+'</option>';});return h;}
@@ -2461,6 +2456,7 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
   function addWorkspace(name,proj,handle){const tt=(proj.terms||[]).map(mkTerm);if(!window.__keepOwnNs)normalizeOwnNs(tt);tt.forEach(ensureRequired);
     workspaces.push({name:name,terms:tt,handle:handle||null,prefix:proj.prefix||userPrefix,iri:proj.iri||userIri,dirty:false,groups:(proj.groups||[]).map(g=>({id:g.id||nid(),name:g.name||"Group",collapsed:!!g.collapsed,parentId:g.parentId||null}))});return workspaces.length-1;}
   function activateWs(k){if(k<0||k>=workspaces.length)return;activeWs=k;const w=workspaces[k];terms=w.terms;if(w.prefix!==undefined)userPrefix=w.prefix;if(w.iri)userIri=w.iri;userOrg=w.org||_iriToOrg(userIri)||"";selId=terms.length?terms[0].id:null;lastFocused=null;buildMine();if(typeof renderOntos==="function")renderOntos();if(typeof buildDatalists==="function")buildDatalists();renderWsSelect();if(typeof syncNsBox==="function")syncNsBox();render();}
+  function unifyPrefixesToDeclared(dryRun){const changes=[];function visitNode(n){if(!n)return;const pp=parts(n.val||"");if(pp.prefix&&!pp.lit&&!pp.iri&&pp.sel){const iri=_computeIRI(pp.prefix,pp.local);if(iri){const rec=_resolveByIRI(iri);if(rec&&rec.pfx!==pp.prefix){const newCurie=rec.pfx+":"+rec.code;changes.push({term:n,old:n.val,new:newCurie,iri:iri});if(!dryRun)n.val=newCurie;}}}const predPP=predParts(n.pred||"");if(predPP.prefix&&predPP.sel){const iri=_computeIRI(predPP.prefix,predPP.local);if(iri){const rec=_resolveByIRI(iri);if(rec&&rec.pfx!==predPP.prefix){const newPred=rec.pfx+":"+rec.code;changes.push({term:n,old:n.pred,new:newPred,iri:iri});if(!dryRun){n.pred=newPred;n.relPfx=rec.pfx;}}}}(n.children||[]).forEach(visitNode);}terms.forEach(visitNode);if(dryRun){console.log("Prefix unification dry run:",changes.length,"changes");changes.forEach(c=>console.log(c.old,"->",c.new,"(",c.iri,")"));}else if(changes.length){console.log("Unified",changes.length,"prefixes");render();}return changes;}
 
   // TTL serializer (workspace to Turtle).
   // ==========================================================================

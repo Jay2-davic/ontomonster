@@ -530,7 +530,7 @@ def _load_graph(f: Path, nm: str) -> Graph:
     )
 
 
-def _parse_file(f: Path, name: str = None) -> list:
+def _parse_file(f: Path, name: str = None, declared_prefix: str = None) -> list:
     nm = name or f.name
     g = _load_graph(f, nm)  # Decode, normalize and parse by file type.
     ns2pfx = {str(n): p for p, n in g.namespaces() if p}
@@ -765,10 +765,11 @@ def _parse_file(f: Path, name: str = None) -> list:
     props = [r for r in props if r["pfx"] in keep]
     nsmap = {p: n for p, n in nsmap.items() if p in keep}
 
-    # Label the primary vocabulary of the file with the file name
-    # (cco.ttl gives cco). This is the prefix that the user controls.
-    # Keep the real namespace IRI, so that the curies expand correctly.
-    fp = _file_prefix(nm)
+    # Label the primary vocabulary of the file with the declared prefix
+    # from sources.yaml, or fall back to the file name (cco.ttl gives
+    # cco). This is the prefix that the user controls. Keep the real
+    # namespace IRI, so that the curies expand correctly.
+    fp = declared_prefix if declared_prefix else _file_prefix(nm)
     # Do not rename the primary vocabulary to the file name if that name
     # already belongs to a different kept namespace. The QUDT file has
     # the name "qudt", but its vocabulary with the most classes is

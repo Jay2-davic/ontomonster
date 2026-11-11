@@ -1685,7 +1685,22 @@ def refcache_build():
             "total": 0,
         }  # No project is open yet. Do nothing. This is not an error.
     sources = _ref_sources(pr)
-    refcache.build_async(pr.refcache_dir, sources)
+    # Load sources.yaml for declared prefixes
+    sources_yaml_data = None
+    rr = ROOTS.get("reference_root", "")
+    if rr:
+        p = Path(rr) / "sources.yaml"
+        if p.is_file():
+            try:
+                import yaml as _yaml
+                sources_yaml_data = _yaml.safe_load(
+                    p.read_text(encoding="utf-8")
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.debug(
+                    "refcache_build: could not read sources.yaml: %s", e
+                )
+    refcache.build_async(pr.refcache_dir, sources, sources_yaml_data)
     return {"started": True, "total": len(sources)}
 
 
