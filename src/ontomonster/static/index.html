@@ -1082,6 +1082,55 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
       };
     }));
   };
+  // STEP 1: Deduplicate candidates by full IRI
+  function acDedupByIRI(items){
+    const byIRI={};
+    items.forEach(it=>{
+      let u="";
+      if(it.pfx&&ONTOS[it.pfx]&&ONTOS[it.pfx].classes&&ONTOS[it.pfx].classes[it.code]){
+        u=ONTOS[it.pfx].classes[it.code].u||"";
+      }
+      if(!u){
+        u="__no_iri__"+(it.pfx||"")+"_"+it.code;
+        if(typeof logger!=="undefined"&&logger.debug){
+          logger.debug("acDedupByIRI: no u for",it.pfx,it.code);
+        }
+      }
+      if(!byIRI[u])byIRI[u]=[];
+      byIRI[u].push(it);
+    });
+    const res=[];
+    Object.keys(byIRI).forEach(iri=>{
+      const cands=byIRI[iri];
+      if(cands.length===1){
+        res.push(cands[0]);
+        return;
+      }
+      // Winner selection for one IRI:
+      // 1. Ontology whose prefix equals ID token (UO_ -> uo)
+      let tok=null;
+      const m=/\/obo\/([A-Z]+)_/i.exec(iri);
+      if(m)tok=m[1].toLowerCase();
+      let winner=null;
+      if(tok){
+        winner=cands.find(c=>c.pfx===tok);
+      }
+      // 2. Otherwise copy with definition
+      if(!winner){
+        const withDef=cands.filter(c=>
+          ONTOS[c.pfx]&&ONTOS[c.pfx].classes&&ONTOS[c.pfx].classes[c.code]&&ONTOS[c.pfx].classes[c.code].d
+        );
+        if(withDef.length>0)winner=withDef[0];
+      }
+      // 3. Otherwise first alphabetically
+      if(!winner){
+        cands.sort((a,b)=>(a.pfx||"").localeCompare(b.pfx||""));
+        winner=cands[0];
+      }
+      res.push(winner);
+    });
+    return res;
+  }
   function acCandidates(kind,prefix){const out=[];const H=acHarvest();
     if(kind==="val"){
       // The own terms (always offered for references to itself).
@@ -1118,8 +1167,8 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
   function acRender(){acEnsure();if(!acItems.length){acEl.innerHTML='<div class="acempty">no matches \u2014 keep typing</div>';acEl.classList.add("show");acPlace();return;}let s="";acItems.forEach((it,i)=>{const lab=esc(it.label||it.code);const code=(it.code&&it.code!==it.label)?'<span class="acc">'+esc(it.code)+'</span>':"";s+='<div class="acrow'+(i===acIdx?' sel':'')+'" data-i="'+i+'"><span class="acl">'+lab+'</span>'+code+'</div>';});acEl.innerHTML=s;acEl.classList.add("show");acPlace();}
   let acSrvTok=0,acSrvTimer=null;
   function acServer(){if(!acTarget)return;const pfx=acPrefix,kind=acKind,q=(acTarget.value||"").trim();if(!ONTOS[pfx]||!ONTOS[pfx].searchable)return;const tok=++acSrvTok;
-    _papi("/api/refsearch?prefix="+encodeURIComponent(pfx)+"&kind="+(kind==="rel"?"prop":"class")+"&q="+encodeURIComponent(q)+"&limit=50").then(d=>{if(tok!==acSrvTok||!acTarget||acPrefix!==pfx)return;const add=(d.results||[]).map(x=>({code:x.code,label:x.label||x.code,lc:(x.label||"").toLowerCase(),cc:(x.code||"").toLowerCase()}));const seen={},merged=[];add.concat(acItems).forEach(it=>{if(it.code&&!seen[it.code]){seen[it.code]=1;merged.push(it);}});acItems=merged.slice(0,60);if(acIdx<0&&acItems.length)acIdx=0;acRender();}).catch(()=>{});}
-  function acFilter(q){if(!acTarget)return;q=(q||"").trim().toLowerCase();if(acKind==="val"&&q[0]==='"'){acClose();return;}let items;if(!q){items=acAll.slice().sort((a,b)=>a.lc.length-b.lc.length).slice(0,60);}else{const fz=acAll.length<=20000;const sc=[];for(let k=0;k<acAll.length;k++){const it=acAll[k];const v=acScore(q,it.lc,it.cc,fz,it.ac);if(v>0){it._s=v;sc.push(it);}if(sc.length>6000)break;}sc.sort((a,b)=>b._s-a._s);items=sc.slice(0,60);}acItems=items;acIdx=items.length?0:-1;if(acTarget&&ONTOS[acPrefix]&&ONTOS[acPrefix].searchable){clearTimeout(acSrvTimer);acSrvTimer=setTimeout(acServer,140);}acRender();}
+    _papi("/api/refsearch?prefix="+encodeURIComponent(pfx)+"&kind="+(kind==="rel"?"prop":"class")+"&q="+encodeURIComponent(q)+"&limit=50").then(d=>{if(tok!==acSrvTok||!acTarget||acPrefix!==pfx)return;const add=(d.results||[]).map(x=>({code:x.code,label:x.label||x.code,lc:(x.label||"").toLowerCase(),cc:(x.code||"").toLowerCase(),pfx:pfx}));const merged=acDedupByIRI(add.concat(acItems));acItems=merged.slice(0,60);if(acIdx<0&&acItems.length)acIdx=0;acRender();}).catch(()=>{});}
+  function acFilter(q){if(!acTarget)return;q=(q||"").trim().toLowerCase();if(acKind==="val"&&q[0]==='"'){acClose();return;}let items;if(!q){const sorted=acAll.slice().sort((a,b)=>a.lc.length-b.lc.length);items=acDedupByIRI(sorted).slice(0,60);}else{const fz=acAll.length<=20000;const sc=[];for(let k=0;k<acAll.length;k++){const it=acAll[k];const v=acScore(q,it.lc,it.cc,fz,it.ac);if(v>0){it._s=v;sc.push(it);}if(sc.length>6000)break;}sc.sort((a,b)=>b._s-a._s);items=acDedupByIRI(sc).slice(0,60);}acItems=items;acIdx=items.length?0:-1;if(acTarget&&ONTOS[acPrefix]&&ONTOS[acPrefix].searchable){clearTimeout(acSrvTimer);acSrvTimer=setTimeout(acServer,140);}acRender();}
   // ==========================================================================
   // Autocomplete: the pickers for relations and values.
   // ==========================================================================
