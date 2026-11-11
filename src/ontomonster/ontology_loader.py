@@ -672,19 +672,14 @@ def _parse_file(f: Path, name: str = None) -> list:
             # Declared inverse relations (owl:inverseOf, in either
             # direction). The map can then show a real inverse pair as
             # one edge with two heads. The code never infers an inverse.
-            def _cur(x):
-                xs = str(x)
-                p2 = ns2pfx.get(_ns(xs)) or _derive_prefix(_ns(xs))
-                lo = _local(xs)
-                return (p2 + ":" + lo) if (p2 and lo) else lo
-
+            # Store as full IRIs, not curies.
             inv = []
             for x in g.objects(uri, OWL.inverseOf):
                 if isinstance(x, URIRef):
-                    inv.append(_cur(x))
+                    inv.append(str(x))
             for x in g.subjects(OWL.inverseOf, uri):
                 if isinstance(x, URIRef):
-                    inv.append(_cur(x))
+                    inv.append(str(x))
             if inv:
                 rec["inv"] = sorted(set(inv))
             if (uri, RDF.type, OWL.SymmetricProperty) in g:
