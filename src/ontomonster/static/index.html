@@ -3233,7 +3233,21 @@ table.gigrid td.glink{box-shadow:inset 0 0 0 2px #D4537E}
   function hideRefOverlay(){const el=document.getElementById("refov");if(el)el.classList.remove("show");}
   function updateRefOverlay(p){_refOverlay();const ph=document.getElementById("refphase"),fl=document.getElementById("reffile"),fill=document.getElementById("reffill");const names={load:"Loading cache",check:"Checking files against cache",parse:"Parsing new ontologies (one-time)",ready:"Ready",error:"Problem preparing cache",idle:"Loading cache"};if(ph)ph.textContent=names[p.phase]||p.phase;const tot=p.total||0,done=p.done||0;const pct=tot?Math.round(done/tot*100):(p.phase==="ready"?100:8);if(fill)fill.style.width=Math.max(6,pct)+"%";if(fl)fl.textContent=p.file?(p.file+(p.note?" \u2014 "+p.note:"")):(p.note||"");}
   function runRefcache(done){showRefOverlay();updateRefOverlay({phase:"load",done:0,total:0});_papi("/api/refcache/build",{}).then(()=>pollRefcache(done)).catch(()=>{hideRefOverlay();if(done)done();});}
-  function pollRefcache(done){_papi("/api/refcache/progress").then(p=>{updateRefOverlay(p);if(p.phase==="ready"||p.phase==="error"){_papi("/api/project/status").then(s=>{try{applyReferences(s.references);buildDatalists();renderOntos();render();}catch(e){}setTimeout(hideRefOverlay,250);if(done)done();}).catch(()=>{hideRefOverlay();if(done)done();});}else{setTimeout(()=>pollRefcache(done),250);}}).catch(()=>{setTimeout(()=>pollRefcache(done),400);});}
+  var refPollCount=0;
+  function pollRefcache(done){
+    var delay=refPollCount<10?500:1000;refPollCount++;
+    _papi("/api/refcache/progress").then(p=>{
+      updateRefOverlay(p);
+      if(p.phase==="ready"||p.phase==="error"){
+        refPollCount=0;
+        _papi("/api/project/status",{light:true}).then(s=>{
+          try{applyReferences(s.references);buildDatalists();renderOntos();render();}catch(e){}
+          setTimeout(hideRefOverlay,250);
+          if(done)done();
+        }).catch(()=>{hideRefOverlay();if(done)done();});
+      }else{setTimeout(()=>pollRefcache(done),delay);}
+    }).catch(()=>{setTimeout(()=>pollRefcache(done),delay*2);});
+  }
   function selectOrg(org){_papi("/api/org/select",{org:org}).then(function(s){applyProjectStatus(s);try{renderWsSelect();}catch(e){}
     var n=(s.workspaces||[]).length;
     if(n){toast("Loaded "+n+" workspace"+(n===1?"":"s")+" from "+org);}

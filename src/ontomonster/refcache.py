@@ -28,8 +28,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import threading
 import time
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import pyarrow as pa
@@ -37,9 +40,13 @@ import pyarrow.parquet as pq
 
 from .ontology_loader import _parse_file
 
+logger = logging.getLogger("onto_monster")
+
 # Above this number of terms, return only metadata. The server searches
 # the terms.
 BIG_TERMS = 12000
+# Number of parallel workers for parsing.
+MAX_WORKERS = min(max(1, os.cpu_count() - 1), 6) if os.cpu_count() else 4
 CATALOG = "catalog.parquet"
 # The schema of the sidecar columns. Change it to force a new parse.
 SCHEMA = "v20"
@@ -238,6 +245,21 @@ def _read_terms(refdir: Path, slug: str) -> dict:
     return by
 
 
+def _parse_file_wrapper(path_str):
+    """Parse a file and return its record. Worker for parallel parsing."""
+    try:
+        p = Path(path_str)
+        recs = _parse_file(p)
+        rec = (
+            recs[0]
+            if recs
+            else {"file": p.name, "error": "no declared terms found"}
+        )
+        return path_str, rec, None
+    except Exception as e:  # noqa: BLE001
+        return path_str, {"file": Path(path_str).name}, str(e)
+
+
 # Build.
 def build(refdir: Path, sources: list, parse: bool = True) -> list:
     """Make the catalog current for sources. Return one record for each
@@ -249,6 +271,7 @@ def build(refdir: Path, sources: list, parse: bool = True) -> list:
     function only reads the catalog. It skips new and changed files,
     because the asynchronous builder parses them and shows the progress.
     """
+    t_start = time.time()
     refdir.mkdir(parents=True, exist_ok=True)
     cat = _load_catalog(refdir)
     total = len(sources)
@@ -260,6 +283,7 @@ def build(refdir: Path, sources: list, parse: bool = True) -> list:
 
     # 1) Hash each file. Decide if the file is new, unchanged or
     # changed. Detect duplicates.
+    t_hash_start = time.time()
     plan, seen_hash = [], {}
     for i, s in enumerate(sources):
         p = Path(s["path"])
@@ -309,111 +333,162 @@ def build(refdir: Path, sources: list, parse: bool = True) -> list:
                 phase="check", file=p.name, done=i + 1, total=total, note=state
             )
 
-    # 2) Update the catalog. Parse the new and changed files, and the
-    # files with no sidecar. Flag duplicates.
-    if parse:
-        todo = [
-            x for x in plan if not x[6] and (x[4] != "unchanged" or not x[7])
-        ]
-        n_todo = len(todo)
+    t_hash_end = time.time()
+    n_unchanged = sum(1 for x in plan if x[4] == "unchanged" and x[7])
+    logger.debug(
+        "Hash phase: %.3fs, %d files, %d unchanged (fast path)",
+        t_hash_end - t_hash_start, len(plan), n_unchanged
+    )
+
+    # 2) Check if catalog is current. If every file passes fast path and
+    # has a sidecar, skip the build entirely and return phase "ready".
+    todo = [
+        x for x in plan if not x[6] and (x[4] != "unchanged" or not x[7])
+    ]
+    if parse and not todo:
+        _set(phase="ready", file="", done=total, total=total, note="")
+        logger.debug("Catalog current, skipping build")
+        # Skip to records phase
+        t_parse_start = time.time()
+        t_write_start = t_parse_start
+        t_write_end = t_parse_start
         parsed_n = 0
-        for (
-            s,
-            p,
-            sha,
-            slug,
-            state,
-            version,
-            dup_of,
-            have_side,
-            size,
-            mtime,
-        ) in plan:
-            if dup_of:  # The bytes are identical to an earlier file.
-                canon = cat.get(dup_of) or {}
+    else:
+        # 3) Update the catalog. Parse the new and changed files, and the
+        # files with no sidecar. Use parallel parsing for speed.
+        t_parse_start = time.time()
+        parsed_n = 0
+        if parse and todo:
+            n_todo = len(todo)
+            # Sort todo by size descending (start largest first)
+            todo_with_size = [(x, x[8]) for x in todo]
+            todo_with_size.sort(key=lambda t: t[1], reverse=True)
+            todo_sorted = [x[0] for x in todo_with_size]
+
+            # Prepare parse jobs (only non-duplicates needing parse)
+            parse_jobs = []
+            for x in todo_sorted:
+                s, p, sha, slug, state, version, dup_of, have_side, size, mtime = x
+                if not dup_of and (state != "unchanged" or not have_side):
+                    parse_jobs.append((str(p), p, sha, slug, s, version, size, mtime))
+
+            # Parse in parallel
+            parsed_results = {}
+            if parse_jobs:
+                paths_to_parse = [job[0] for job in parse_jobs]
+                with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                    for i, (path_str, rec, err) in enumerate(
+                        executor.map(_parse_file_wrapper, paths_to_parse)
+                    ):
+                        parsed_n += 1
+                        p = Path(path_str)
+                        _set(
+                            phase="parse",
+                            file=p.name,
+                            done=parsed_n,
+                            total=len(parse_jobs),
+                            note="parsing — one-time",
+                        )
+                        if err:
+                            rec["error"] = err
+                        parsed_results[path_str] = rec
+
+            # Process all entries (duplicates, unchanged, and parsed)
+            for (
+                s,
+                p,
+                sha,
+                slug,
+                state,
+                version,
+                dup_of,
+                have_side,
+                size,
+                mtime,
+            ) in plan:
+                if dup_of:  # The bytes are identical to an earlier file.
+                    canon = cat.get(dup_of) or {}
+                    cat[str(p)] = {
+                        "path": str(p),
+                        "file": p.name,
+                        "sha256": sha,
+                        "prefix": canon.get("prefix", ""),
+                        "title": canon.get("title", ""),
+                        "desc": canon.get("desc", ""),
+                        "iri": canon.get("iri", ""),
+                        "namespaces": canon.get("namespaces", "{}"),
+                        "n_classes": 0,
+                        "n_props": 0,
+                        "version": version,
+                        "status": "duplicate",
+                        "error": "",
+                        "dup_of": dup_of,
+                        "updated_at": now,
+                        "mtime": mtime,
+                        "size": size,
+                    }
+                    continue
+                if state == "unchanged" and have_side and str(p) in cat:
+                    # Keep the parsed data. Only update the version.
+                    cat[str(p)]["version"] = version
+                    cat[str(p)]["status"] = (
+                        "error" if cat[str(p)].get("error") else "ok"
+                    )
+                    cat[str(p)]["mtime"] = mtime
+                    cat[str(p)]["size"] = size
+                    continue
+                # Get parsed result
+                rec = parsed_results.get(str(p))
+                if not rec:
+                    continue
+                rec.setdefault("file", p.name)
+                rec.setdefault("prefix", "")
+                rec.setdefault("iri", "")
+                rec.setdefault("classes", [])
+                rec.setdefault("props", [])
+                rec.setdefault("namespaces", {})
+                if not rec.get("error"):
+                    _write_sidecar(refdir, slug, rec)
+                    _TABLES.pop(slug, None)
                 cat[str(p)] = {
                     "path": str(p),
-                    "file": p.name,
+                    "file": rec["file"],
                     "sha256": sha,
-                    "prefix": canon.get("prefix", ""),
-                    "title": canon.get("title", ""),
-                    "desc": canon.get("desc", ""),
-                    "iri": canon.get("iri", ""),
-                    "namespaces": canon.get("namespaces", "{}"),
-                    "n_classes": 0,
-                    "n_props": 0,
+                    "prefix": rec["prefix"],
+                    "title": rec.get("title") or "",
+                    "desc": rec.get("desc") or "",
+                    "iri": rec["iri"],
+                    "namespaces": json.dumps(rec["namespaces"]),
+                    "n_classes": len(rec["classes"]),
+                    "n_props": len(rec["props"]),
                     "version": version,
-                    "status": "duplicate",
-                    "error": "",
-                    "dup_of": dup_of,
+                    "status": "error" if rec.get("error") else "ok",
+                    "error": rec.get("error") or "",
+                    "dup_of": "",
                     "updated_at": now,
                     "mtime": mtime,
                     "size": size,
                 }
-                continue
-            if state == "unchanged" and have_side and str(p) in cat:
-                cat[str(p)][
-                    "version"
-                ] = version  # Keep the parsed data. Only update the version.
-                cat[str(p)]["status"] = (
-                    "error" if cat[str(p)].get("error") else "ok"
-                )
-                cat[str(p)]["mtime"] = mtime
-                cat[str(p)]["size"] = size
-                continue
-            parsed_n += 1
-            _set(
-                phase="parse",
-                file=p.name,
-                done=parsed_n,
-                total=n_todo,
-                note="parsing — one-time",
-            )
-            try:
-                recs = _parse_file(p)
-                rec = (
-                    recs[0]
-                    if recs
-                    else {"file": p.name, "error": "no declared terms found"}
-                )
-            except Exception as e:  # noqa: BLE001
-                rec = {"file": p.name, "error": str(e)}
-            rec.setdefault("file", p.name)
-            rec.setdefault("prefix", "")
-            rec.setdefault("iri", "")
-            rec.setdefault("classes", [])
-            rec.setdefault("props", [])
-            rec.setdefault("namespaces", {})
-            if not rec.get("error"):
-                _write_sidecar(refdir, slug, rec)
-                _TABLES.pop(slug, None)
-            cat[str(p)] = {
-                "path": str(p),
-                "file": rec["file"],
-                "sha256": sha,
-                "prefix": rec["prefix"],
-                "title": rec.get("title") or "",
-                "desc": rec.get("desc") or "",
-                "iri": rec["iri"],
-                "namespaces": json.dumps(rec["namespaces"]),
-                "n_classes": len(rec["classes"]),
-                "n_props": len(rec["props"]),
-                "version": version,
-                "status": "error" if rec.get("error") else "ok",
-                "error": rec.get("error") or "",
-                "dup_of": "",
-                "updated_at": now,
-                "mtime": mtime,
-                "size": size,
-            }
-        # Remove the catalog rows of files that are no longer present.
-        present = {str(Path(s["path"])) for s in sources}
-        for gone in [k for k in cat if k not in present]:
-            cat.pop(gone, None)
-        _save_catalog(refdir, cat)
-        _set(phase="ready", file="", done=total, total=total, note="")
+            # Remove the catalog rows of files that no longer exist.
+            present = {str(Path(s["path"])) for s in sources}
+            for gone in [k for k in cat if k not in present]:
+                cat.pop(gone, None)
+            t_write_start = time.time()
+            _save_catalog(refdir, cat)
+            t_write_end = time.time()
+            _set(phase="ready", file="", done=total, total=total, note="")
+        else:
+            t_write_start = t_parse_start
+            t_write_end = t_parse_start
+
+        logger.debug(
+            "Parse phase: %.3fs, %d files parsed",
+            t_write_start - t_parse_start, parsed_n
+        )
+        logger.debug("Catalog write: %.3fs", t_write_end - t_write_start)
 
     # 3) Make the records, one for each file.
+    t_records_start = time.time()
     out = []
     for (
         s,
@@ -471,6 +546,10 @@ def build(refdir: Path, sources: list, parse: bool = True) -> list:
             except Exception:  # noqa: BLE001
                 rec["classes"], rec["props"] = [], []
         out.append(rec)
+
+    t_end = time.time()
+    logger.debug("Records phase: %.3fs", t_end - t_records_start)
+    logger.debug("Total build time: %.3fs", t_end - t_start)
     return out
 
 
@@ -538,10 +617,14 @@ def search(
                 )
             ):
                 continue
-            key = t["pfx"] + ":" + t["c"]
-            if key in seen:
+            # Deduplicate by URI, not prefix:code, to avoid showing the
+            # same class or property multiple times with different
+            # namespace prefixes.
+            iri = t.get("u", "")
+            if iri and iri in seen:
                 continue
-            seen.add(key)
+            if iri:
+                seen.add(iri)
             res.append(
                 {
                     "code": t["c"],
@@ -549,7 +632,7 @@ def search(
                     "pfx": t["pfx"],
                     "def": t.get("d", ""),
                     "alt": t.get("a", ""),
-                    "iri": t.get("u", ""),
+                    "iri": iri,
                 }
             )
             if len(res) >= limit * 6:
@@ -598,9 +681,12 @@ def glossary(
             for t in by[w]:
                 if t["pfx"] != prefix:
                     continue
-                key = t["pfx"] + ":" + t["c"]
-                if key in seen:
+                # Deduplicate by URI, not prefix:code
+                iri = t.get("u", "")
+                if iri and iri in seen:
                     continue
+                if iri:
+                    seen.add(iri)
                 lab = t.get("l") or t["c"]
                 alt = t.get("a", "") or ""
                 df = t.get("d", "") or ""
@@ -612,7 +698,6 @@ def glossary(
                     and ql not in df.lower()
                 ):
                     continue
-                seen.add(key)
                 rows.append(
                     {
                         "code": t["c"],

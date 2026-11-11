@@ -15,11 +15,25 @@ from disk.
 """
 
 import json
+import logging
+import os
 import shutil
 from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+
+# Configure logging based on ONTO_MONSTER_LOG environment variable.
+log_level = os.environ.get("ONTO_MONSTER_LOG", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, log_level, logging.INFO),
+    format="%(message)s"
+)
+logger = logging.getLogger("onto_monster")
+# Hide refcache/progress from uvicorn access log.
+logging.getLogger("uvicorn.access").addFilter(
+    lambda record: "/api/refcache/progress" not in record.getMessage()
+)
 
 from .ontology_loader import load_ontologies
 from . import refcache
@@ -75,7 +89,7 @@ def _persist_state(pr: "Project | None" = None) -> None:
             data["root"] = str(pr.root)
         STATE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except Exception as e:  # noqa: BLE001
-        print(f"[state] could not persist state: {e}")
+        logger.debug("state: could not persist state: %s", e)
 
 
 # Load the roots when the module is imported.
@@ -134,11 +148,9 @@ def _ttl_workspaces(pr: "Project", taken: set) -> tuple[list, list]:
                     "file": f.name,
                 }
             )
-            print(
-                f"[ttl] loaded {f.name} -> {len(proj.get('terms', []))} terms"
-            )
+            logger.debug("ttl: loaded %s -> %d terms", f.name, len(proj.get('terms', [])))
         except Exception as e:  # noqa: BLE001
-            print(f"[ttl] could not parse {f.name}: {e}")
+            logger.debug("ttl: could not parse %s: %s", f.name, e)
     return out, names
 
 
@@ -283,10 +295,7 @@ def _emit_ws(out, pr, org, slug, folder, cand, wdir=None):
                 "folder": folder,
             }
         )
-        print(
-            f"[org:{org}] restored draft {folder or slug} -> "
-            f"{len(draft['terms'])} terms"
-        )
+        logger.debug("org:%s: restored draft %s -> %d terms", org, folder or slug, len(draft['terms']))
         return True
     try:
         hint = "xml" if cand.suffix.lower() in (".owl", ".rdf") else None
@@ -307,12 +316,10 @@ def _emit_ws(out, pr, org, slug, folder, cand, wdir=None):
                 "file": cand.name,
             }
         )
-        print(
-            f"[org:{org}] loaded {cand} -> {len(proj.get('terms', []))} terms"
-        )
+        logger.debug("org:%s: loaded %s -> %d terms", org, cand, len(proj.get('terms', [])))
         return True
     except Exception as e:  # noqa: BLE001
-        print(f"[org:{org}] could not parse {cand}: {e}")
+        logger.debug("org:%s: could not parse %s: %s", org, cand, e)
         return False
 
 
@@ -330,12 +337,9 @@ def _org_workspaces(pr: "Project", org: str, taken: set) -> list:
     out = []
     base = pr.root / org
     if not base.is_dir():
-        print(f"[org:{org}] folder not found: {base}")
+        logger.debug("org:%s: folder not found: %s", org, base)
         return out
-    print(
-        f"[org:{org}] scanning {base} -> "
-        f"{[p.name for p in sorted(base.iterdir())]}"
-    )
+    logger.debug("org:%s: scanning %s -> %s", org, base, [p.name for p in sorted(base.iterdir())])
 
     # 1) Collect drafts from EVERY save location under the org: the save
     # folder of the org (<org>/save), each nested save folder of a
@@ -371,10 +375,7 @@ def _org_workspaces(pr: "Project", org: str, taken: set) -> list:
                     }
                 )
                 taken.add(slug)
-                print(
-                    f"[org:{org}] restored '{slug}' from {label} "
-                    f"({len(w['terms'])} terms)"
-                )
+                logger.debug("org:%s: restored '%s' from %s (%d terms)", org, slug, label, len(w['terms']))
 
     _harvest(base / "save", org + "/save")
     for sub in sorted(
@@ -387,7 +388,7 @@ def _org_workspaces(pr: "Project", org: str, taken: set) -> list:
     # restore.
     _collect_ws(pr, org, base, taken, out, depth=0, is_org_root=True)
     if not out:
-        print(f"[org:{org}] no workspaces found under {base}")
+        logger.debug("org:%s: no workspaces found under %s", org, base)
     return out
 
 
@@ -443,7 +444,7 @@ def _collect_ws(pr, org, d, taken, out, depth=0, is_org_root=False):
                 wdir=d,
             ):
                 taken.add(slug0)
-                print(f"[org:{org}] workspace '{d.name}' (from save draft)")
+                logger.debug("org:%s: workspace '%s' (from save draft)", org, d.name)
             return
 
     # The flat <org>_workspace container has the five files directly in
@@ -581,7 +582,7 @@ def _loaded_namespaces(pr) -> dict:
                 if p and n:
                     out.setdefault(p, n)
     except Exception as e:  # noqa: BLE001
-        print(f"[ns] could not read loaded namespaces: {e}")
+        logger.debug("ns: could not read loaded namespaces: %s", e)
     return out
 
 
@@ -612,32 +613,34 @@ def _consolidate(pr):
     return write_consolidate(pr, org, terms, version=maxv, prefixes=prefixes)
 
 
-def _status(include_refs: bool = True) -> dict:
+def _status(include_refs: bool = True, scan_org: bool = True) -> dict:
     pr = _current()
     if not pr:
         return {"open": False}
     refs = []
     if include_refs:
         refs = refcache.build(pr.refcache_dir, _ref_sources(pr), parse=False)
+    # Light mode: return just refs, skip workspace scan.
+    if not scan_org:
+        return {
+            "open": True,
+            "project": pr.to_dict(),
+            "references": refs,
+            "light": True,
+        }
     workspaces, taken = [], set()
     working = pqs.list_working(pr.save_dir)
-    hist = pqs.list_workspaces(pr.save_dir)  # Versioned (exported) workspaces.
+    hist = pqs.list_workspaces(pr.save_dir)
     order = list(hist) + [w for w in working if w not in hist]
     for slug in order:
         taken.add(slug)
         w = pqs.load_working(pr.save_dir, slug)
-        if w is not None:  # The live draft wins.
-            lv = pqs.latest_version(
-                pr.save_dir, slug
-            )  # The latest EXPORTED version, or None.
+        if w is not None:
+            lv = pqs.latest_version(pr.save_dir, slug)
             workspaces.append(
                 {
                     "slug": slug,
-                    "version": pqs.next_version(
-                        lv
-                        # In progress: the version is "1" until the
-                        # first export.
-                    ),
+                    "version": pqs.next_version(lv),
                     "draft": True,
                     "terms": w["terms"],
                     "cited": w["cited"],
@@ -661,14 +664,10 @@ def _status(include_refs: bool = True) -> dict:
             )
     org = STATE.get("org")
     if org:
-        workspaces.extend(
-            _org_workspaces(pr, org, taken)
-        )  # Only the sources of the org.
+        workspaces.extend(_org_workspaces(pr, org, taken))
         ttl_inputs = []
     else:
-        ttl_ws, ttl_inputs = _ttl_workspaces(
-            pr, taken
-        )  # Fallback to the earlier ttl/ folder if no org is selected.
+        ttl_ws, ttl_inputs = _ttl_workspaces(pr, taken)
         workspaces.extend(ttl_ws)
     return {
         "open": True,
@@ -782,7 +781,7 @@ def domains_map():
                     if o.get("prefix"):
                         out[o["prefix"]] = d
             except Exception as e:  # noqa: BLE001
-                print(f"[domains] could not read sources.yaml: {e}")
+                logger.debug("domains: could not read sources.yaml: %s", e)
     return JSONResponse({"domains": out})
 
 
@@ -1011,8 +1010,10 @@ async def org_select(req: Request):
 
 
 @app.get("/api/project/status")
-def project_status():
-    return JSONResponse(_status())
+async def project_status(req: Request):
+    """Get project status. Pass light=true to skip org scan."""
+    light = req.query_params.get("light") == "true"
+    return JSONResponse(_status(include_refs=True, scan_org=not light))
 
 
 @app.post("/api/project/namespace")
@@ -1084,7 +1085,7 @@ def project_refresh():
     pr = _current()
     if not pr:
         return JSONResponse({"error": "No project open."}, status_code=400)
-    print("[project] refresh: re-scanning ontologies/ and ttl/")
+    logger.debug("project: refresh: re-scanning ontologies/ and ttl/")
     return JSONResponse(_status())
 
 
@@ -1510,14 +1511,14 @@ async def project_move_workspace(req: Request):
                 moved = str(tgt_parent / "save") + " (draft)"
     except Exception as e:  # noqa: BLE001
         return JSONResponse({"error": f"Move failed: {e}"}, status_code=500)
-    print(f"[move] {slug}: {from_org} -> {to_org}  ({moved})")
+    logger.debug("move: %s: %s -> %s  (%s)", slug, from_org, to_org, moved)
     # Update the consolidated bundle of both orgs (best effort).
     for o in (from_org, to_org):
         try:
             STATE["org"] = o
             _consolidate(pr)
         except Exception as ce:  # noqa: BLE001
-            print(f"[move] consolidate {o} warning: {ce}")
+            logger.debug("move: consolidate %s warning: %s", o, ce)
     STATE["org"] = (
         # Stay in the source org. Its remaining workspaces stay visible.
         from_org

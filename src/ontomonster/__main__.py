@@ -6,12 +6,27 @@ command then opens Firefox at the URL of the app.
 """
 
 import argparse
+import logging
+import os
 import threading
 import webbrowser
 
 import uvicorn
 
 from . import app as _app
+
+# Configure logging based on ONTO_MONSTER_LOG environment variable.
+log_level = os.environ.get("ONTO_MONSTER_LOG", "INFO").upper()
+if log_level == "DEBUG":
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(levelname)s: %(message)s"
+    )
+else:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(message)s"
+    )
 
 
 def _open_browser(url: str) -> None:

@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -26,6 +27,8 @@ from pathlib import Path
 import yaml
 from rdflib import Graph, Namespace, RDF, RDFS, OWL, BNode, Literal, URIRef
 from rdflib.namespace import SKOS, XSD
+
+logger = logging.getLogger("onto_monster")
 
 # LinkML runs in the same process, with no subprocess. The guard lets
 # the module import even if LinkML is not installed. The export endpoint
@@ -445,9 +448,12 @@ if _LINKML:
     }
 
 
-def _gen(kind: str, schema_path: Path, out_path: Path):
+def _gen(kind: str, schema_path: Path, out_path: Path, timeout: int = 60):
     """Run a LinkML generator in the same process (linkml.generators)
     and write the output.
+
+    Args:
+        timeout: Maximum seconds to wait for generation (default 60)
     """
     if not _LINKML:
         return (
@@ -457,9 +463,31 @@ def _gen(kind: str, schema_path: Path, out_path: Path):
     G = _GENERATORS.get(kind)
     if G is None:
         return False, f"no generator '{kind}'"
+
+    # Use threading with timeout to prevent infinite hangs
+    import threading
+    result = {"text": None, "error": None}
+
+    def _run_generator():
+        try:
+            result["text"] = G(schema_path.as_posix()).serialize()
+        except Exception as e:  # noqa: BLE001
+            result["error"] = str(e)
+
+    thread = threading.Thread(target=_run_generator, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout)
+
+    if thread.is_alive():
+        # Timeout occurred
+        logger.debug("export: %s generation timed out after %ds - skipping", kind, timeout)
+        return False, f"{kind} generation timed out after {timeout}s (likely due to RDF canonicalization issue)"
+
+    if result["error"]:
+        return False, result["error"]
+
     try:
-        text = G(schema_path.as_posix()).serialize()
-        out_path.write_text(text, encoding="utf-8")
+        out_path.write_text(result["text"], encoding="utf-8")
         return True, ""
     except Exception as e:  # noqa: BLE001
         return False, str(e)[:400]

@@ -3,6 +3,25 @@
 This file lists all notable changes to OntoMonster. The project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- Reduced startup noise. Diagnostic messages moved to DEBUG level.
+  Set ONTO_MONSTER_LOG=debug to see them. Default console shows only
+  the startup URL and errors.
+- Faster warm starts. Catalog build skips entirely when all files are
+  unchanged and sidecars exist. No loading overlay in this case.
+- Parallel parsing. New or changed reference files parse in parallel
+  (up to 6 workers). Largest files start first.
+- Progressive polling. UI polls at 500ms, increases to 1000ms after
+  5 seconds.
+- Light status endpoint. After refcache build, UI calls status with
+  light=true to skip org scan.
+
+### Fixed
+- Removed /api/refcache/progress from uvicorn access log to reduce
+  noise.
+
 ## [1.0.0] - 2026-11-05
 
 First public release. OntoMonster is a local tool that helps you build 
