@@ -26,18 +26,22 @@
 ✅ Map inverse pair drawing unchanged
 ✅ CSS styling for derived rows (.derived-row)
 
-## Remaining Implementation
+## Completed (Part 4)
+✅ Write Switch for Inverse Assertions
+✅ Checkbox/switch on each relationship row
+✅ Only shown when predicate has declared inverse (not symmetric)
+✅ Default: OFF
+✅ When ON:
+  ✅ Class-to-class: writes `B subClassOf (inverse some A)` with warning
+  ✅ Individuals: writes direct assertion `y inverse x`
+  ✅ Switch state stored on row (field: writeInverse)
+  ✅ Updates/deletes written inverse when source changes/deleted
+✅ Generated inverse rows shown as read-only with visual indicator
+✅ Generated rows filtered out before save (_cleanTermsForSave)
+✅ Never leaves orphan inverses (cascade delete)
+✅ Warning shown for class restrictions (stronger claim message)
 
-### Part 4: Write Switch (Inverse Assertions)
-- Add checkbox/switch on each relationship row
-- Only available when predicate has declared inverse
-- Default: OFF
-- When ON:
-  - Class-to-class: write `B subClassOf (inverse some A)` with warning
-  - Individuals: write direct assertion `y inverse x`
-  - Store switch state on the row (new field: writeInverse)
-  - Update/delete written inverse when source changes/deleted
-- Never leave orphan inverses
+## Remaining Implementation
 
 ### Part 5: Scan Checks
 - Both directions written manually (duplicate - flag as warning)
