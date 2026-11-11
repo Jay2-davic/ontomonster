@@ -41,24 +41,34 @@
 ✅ Never leaves orphan inverses (cascade delete)
 ✅ Warning shown for class restrictions (stronger claim message)
 
-## Remaining Implementation
+## Completed (Part 5)
+✅ Scan Checks (src/ontomonster/validator.py)
+✅ Duplicate: Both directions written manually (warning)
+✅ Info: Relation with no declared inverse (information only)
+✅ Orphan: Written inverse whose source row is gone (error)
+✅ Function: scan_inverse_issues(project, props)
+✅ Report: print_scan_report(issues)
 
-### Part 5: Scan Checks
-- Both directions written manually (duplicate - flag as warning)
-- Relation with no declared inverse (info only, ignorable)
-- Written inverse whose source row is gone (orphan - error)
+## Completed (Part 6)
+✅ Export Updates
+✅ **OWL Export** (src/ontomonster/exporter.py domain_ttl):
+  ✅ Property terms with om:inverseOf: add owl:inverseOf triple
+  ✅ Relationships with writeInverse=true: write inverse restrictions
+  ✅ Properties declared as owl:ObjectProperty/DatatypeProperty
+✅ **LinkML Export** (src/ontomonster/exporter.py build_schema):
+  ✅ Add "inverse" field to slot definitions when property has inverse
+  ✅ Inverse field references the inverse slot name
+✅ **SHACL**: No changes (per requirements)
 
-### Part 6: Export Updates
-**OWL Export** (src/ontomonster/exporter.py domain_ttl):
-- For property terms with "inverse of" field: add owl:inverseOf triple
-- For relationships with writeInverse=true:
-  - Class-to-class: write restriction with inverse
-  - Individuals: write inverse assertion
+## All Parts Complete
 
-**LinkML Export** (src/ontomonster/exporter.py build_schema):
-- Add "inverse" field to slot definitions when property has inverse
-
-**SHACL**: No changes (per requirements)
+All six parts of inverse relationship support are now implemented:
+- Part 1: Read-only chips ✅
+- Part 2: Own property inverse field ✅
+- Part 3: Derived incoming rows ✅
+- Part 4: Write switch for assertions ✅
+- Part 5: Scan checks ✅
+- Part 6: Export updates ✅
 
 ### Testing Checklist
 1. Load CCO, check describes/described by shows chip
