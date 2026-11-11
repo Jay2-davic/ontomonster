@@ -12,6 +12,19 @@ your computer.
 
 ### Recent Additions (pre-release)
 
+**Prefix Alignment for Reference Ontologies**
+- Reference ontologies now use declared prefix from sources.yaml as
+  ontology key, not file name. QUDT files become qudt, unit,
+  quantitykind (as declared) instead of qudt-schema, qudt-units,
+  qudt-quantitykind (from file names).
+- IRI fallback resolution: Terms resolve by IRI when prefix not loaded.
+  Saved qudt-schema:hasUnit now finds definition from qudt:hasUnit.
+- Prefix unification function (unifyPrefixesToDeclared) rewrites old
+  prefix labels to declared prefix when IRI identical. Dry run mode
+  shows changes before apply.
+- Collision handling: When two files declare same prefix, first wins,
+  second falls back to file name.
+
 **OWL/XML Support**
 - Native OWL/XML reader. Ontologies in OWL/XML format (like cto.owl)
   now load correctly. The reader uses streaming parse for memory
